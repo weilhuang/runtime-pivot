@@ -49,6 +49,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * OpAMP Agent client. Prefers WebSocket for push/events and can fall back to HTTP polling.
  */
 public final class OpampClient implements Closeable {
+    static final long HTTP_POLL_SECONDS = 2L;
+
     private final ConnectionConfig config;
     private final String agentVersion;
     private final ByteString instanceUid;
@@ -126,14 +128,12 @@ public final class OpampClient implements Closeable {
     }
 
     private void heartbeat() {
-        if (closed.get()) {
+        if (closed.get() || !websocketTransport) {
             return;
         }
         try {
-            if (websocketTransport && ws != null && ws.isOpen()) {
+            if (ws != null && ws.isOpen()) {
                 ws.send(OpampWire.encodeAgentToServerWs(statusReport(false), config.getMaxMessageBytes()));
-            } else if (!websocketTransport) {
-                sendHttp(statusReport(false));
             }
         } catch (Exception ignored) {
         }
@@ -151,7 +151,7 @@ public final class OpampClient implements Closeable {
                 } catch (Exception ignored) {
                 }
             }
-        }, heartbeatSeconds, heartbeatSeconds, TimeUnit.SECONDS);
+        }, 0L, HTTP_POLL_SECONDS, TimeUnit.SECONDS);
     }
 
     private AgentToServer statusReport(boolean full) {
@@ -337,6 +337,8 @@ public final class OpampClient implements Closeable {
             if (websocketTransport && ws != null && ws.isOpen()) {
                 ws.send(OpampWire.encodeAgentToServerWs(disconnect, config.getMaxMessageBytes()));
                 ws.closeBlocking();
+            } else if (!websocketTransport) {
+                sendHttp(disconnect);
             }
         } catch (Exception ignored) {
         }

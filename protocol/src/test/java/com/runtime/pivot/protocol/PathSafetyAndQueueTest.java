@@ -12,12 +12,13 @@ import static org.junit.Assert.fail;
 
 public class PathSafetyAndQueueTest {
     @Test
-    public void boundedQueueCountsDroppedEvents() {
+    public void boundedQueueEvictsOldestWhenFull() {
         BoundedEventQueue<String> queue = new BoundedEventQueue<String>(2);
         assertTrue(queue.offer("a"));
         assertTrue(queue.offer("b"));
-        assertFalse(queue.offer("c"));
+        assertTrue(queue.offer("c"));
         assertEquals(1, queue.droppedCount());
+        assertEquals(java.util.Arrays.asList("b", "c"), queue.snapshot(10));
         assertEquals(2, queue.drain(10).size());
         assertEquals(0, queue.size());
     }

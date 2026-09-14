@@ -235,9 +235,16 @@ public final class OpampServer implements Closeable {
     void onClosed(WebSocket conn) {
         AgentSession current = session.get();
         if (current != null && current.ownsWebSocket(conn)) {
-            session.compareAndSet(current, null);
-            current.connected.set(false);
-            current.failPending(new IOException("Agent disconnected"));
+            clearSession(current, "Agent disconnected");
+        }
+    }
+
+    void clearSession(AgentSession current, String reason) {
+        if (current == null) {
+            return;
+        }
+        if (session.compareAndSet(current, null)) {
+            current.markDisconnected(reason);
             for (OpampServerListener listener : listeners) {
                 listener.onAgentDisconnected(current);
             }
@@ -412,7 +419,7 @@ public final class OpampServer implements Closeable {
                 handleCustom(message.getCustomMessage());
             }
             if (message.hasAgentDisconnect()) {
-                sink.close(1000, "agent disconnect");
+                server.clearSession(this, "agent disconnect");
             }
         }
 
@@ -482,11 +489,18 @@ public final class OpampServer implements Closeable {
             pending.clear();
         }
 
-        void close(String reason) {
+        void markDisconnected(String reason) {
             if (connected.compareAndSet(true, false)) {
                 failPending(new IOException(reason));
-                sink.close(1000, reason);
+                TransportSink current = sink;
+                if (current != null) {
+                    current.close(1000, reason);
+                }
             }
+        }
+
+        void close(String reason) {
+            markDisconnected(reason);
         }
 
         private void scheduleTimeout(final CompletableFuture<CommandResult> future, final String requestId, long timeoutMs) {

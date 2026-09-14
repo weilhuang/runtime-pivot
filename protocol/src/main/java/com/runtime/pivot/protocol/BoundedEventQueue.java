@@ -25,8 +25,8 @@ public final class BoundedEventQueue<T> {
     public boolean offer(T item) {
         synchronized (lock) {
             if (items.size() >= capacity) {
+                items.remove(0);
                 dropped.incrementAndGet();
-                return false;
             }
             items.add(item);
             return true;

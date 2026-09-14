@@ -111,6 +111,69 @@ public class OpampHandshakeTest {
     }
 
     @Test
+    public void httpFallbackPingWorksFasterThanDefaultHeartbeat() throws Exception {
+        String token = AuthTokens.randomToken();
+        OpampServer server = OpampServer.start(ConnectionConfig.builder()
+                .token(token)
+                .sessionId("session-http-fast")
+                .build());
+        ConnectionConfig httpOnly = ConnectionConfig.builder()
+                .host("127.0.0.1")
+                .wsPort(1)
+                .httpPort(server.getHttpPort())
+                .token(token)
+                .sessionId("session-http-fast")
+                .build();
+        OpampClient client = new OpampClient(httpOnly, "3.0.0-test",
+                Collections.<String, CommandHandler>singletonMap(PivotCommands.PING, pingHandler()));
+        try {
+            client.start();
+            waitUntil(server::isAgentConnected, 8_000);
+            CommandResult result = server.sendCommand(CommandRequest.newBuilder()
+                    .setRequestId(UUID.randomUUID().toString())
+                    .setCommand(PivotCommands.PING)
+                    .setTimeoutMs(8_000)
+                    .setPayload(PingRequest.newBuilder().setEcho("fast").build().toByteString())
+                    .build(), 8_000).get(10, TimeUnit.SECONDS);
+            assertEquals("fast", PingResult.parseFrom(result.getPayload()).getEcho());
+        } finally {
+            client.close();
+            server.close();
+        }
+    }
+
+    @Test
+    public void httpFallbackDisconnectClearsConnectedSession() throws Exception {
+        String token = AuthTokens.randomToken();
+        OpampServer server = OpampServer.start(ConnectionConfig.builder()
+                .token(token)
+                .sessionId("session-http-disconnect")
+                .build());
+        ConnectionConfig httpOnly = ConnectionConfig.builder()
+                .host("127.0.0.1")
+                .wsPort(1)
+                .httpPort(server.getHttpPort())
+                .token(token)
+                .sessionId("session-http-disconnect")
+                .build();
+        OpampClient client = new OpampClient(httpOnly, "3.0.0-test",
+                Collections.<String, CommandHandler>emptyMap());
+        try {
+            client.start();
+            waitUntil(server::isAgentConnected, 8_000);
+            client.close();
+            waitUntil(new Check() {
+                @Override
+                public boolean ok() {
+                    return !server.isAgentConnected();
+                }
+            }, 8_000);
+        } finally {
+            server.close();
+        }
+    }
+
+    @Test
     public void connectionConfigPreservesEventBufferSize() throws Exception {
         OpampServer server = OpampServer.start(ConnectionConfig.builder()
                 .token(AuthTokens.randomToken())
