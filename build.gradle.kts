@@ -57,6 +57,9 @@ val forbiddenApiScan by tasks.registering {
                     if (rel.contains("plugin") && text.contains("@TestOnly")) {
                         violations += "$rel: production plugin code must not use @TestOnly"
                     }
+                    if (rel.contains("plugin") && text.contains("PluginManagerCore")) {
+                        violations += "$rel: PluginManagerCore is internal; locate the agent jar from the packaged resource"
+                    }
                     if (isDropFrameWhitelist(rel).not() && text.contains("XDropFrameHandler")) {
                         violations += "$rel: XDropFrameHandler must stay isolated in DropFrameCapability"
                     }

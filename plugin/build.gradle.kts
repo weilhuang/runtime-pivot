@@ -131,6 +131,8 @@ intellijPlatform {
                 VerifyPluginTask.FailureLevel.SCHEDULED_FOR_REMOVAL_API_USAGES,
             )
         }
+        // XDropFrameHandler is the approved Experimental exception, isolated in DropFrameCapability.
+        // It is reported by Plugin Verifier but is not a failureLevel.
         ides {
             recommended()
         }

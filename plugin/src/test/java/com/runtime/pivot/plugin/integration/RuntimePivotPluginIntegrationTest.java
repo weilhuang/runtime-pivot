@@ -1,6 +1,6 @@
 package com.runtime.pivot.plugin.integration;
 
-import com.intellij.ide.plugins.PluginManagerCore;
+import com.intellij.ide.plugins.PluginManager;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.extensions.PluginId;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
@@ -11,8 +11,8 @@ import com.runtime.pivot.protocol.ConnectionConfig;
 
 public class RuntimePivotPluginIntegrationTest extends BasePlatformTestCase {
     public void testPluginIsLoaded() {
-        PluginId pluginId = PluginId.getId(RuntimePivotConstants.PLUGIN_ID);
-        assertNotNull(PluginManagerCore.getPlugin(pluginId));
+        assertNotNull(PluginManager.getInstance().findEnabledPlugin(
+                PluginId.getId(RuntimePivotConstants.PLUGIN_ID)));
     }
 
     public void testProjectServicesAreRegistered() {

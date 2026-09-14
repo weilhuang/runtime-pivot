@@ -6,12 +6,11 @@ import org.jetbrains.annotations.PropertyKey;
 
 import java.util.function.Supplier;
 
-public final class RuntimePivotBundle extends DynamicBundle {
+public final class RuntimePivotBundle {
     private static final String BUNDLE = "messages.RuntimePivotBundle";
-    private static final RuntimePivotBundle INSTANCE = new RuntimePivotBundle();
+    private static final DynamicBundle INSTANCE = new DynamicBundle(RuntimePivotBundle.class, BUNDLE);
 
     private RuntimePivotBundle() {
-        super(BUNDLE);
     }
 
     public static String message(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, Object... params) {
