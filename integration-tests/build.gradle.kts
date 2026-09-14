@@ -42,6 +42,7 @@ tasks.withType<JavaCompile>().configureEach {
 tasks.test {
     useJUnit()
     dependsOn(agentJarTask, testAppJarTask)
+    inputs.property("agentJdk", agentJdkVersion)
     systemProperty("java.awt.headless", "true")
     doFirst {
         systemProperty("runtime.pivot.agent.jar", agentJarTask.get().outputs.files.singleFile.absolutePath)
