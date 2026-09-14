@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 148 148" role="img" aria-label="Runtime Pivot" color-scheme="light dark">
+  <!--
+    README-only logo. Do not use as the JetBrains pluginIcon.
+    Recreates the original bug-in-reticle mark as real vectors.
+    Theme-aware fill keeps the icon readable on GitHub light and dark backgrounds.
+    The group fill is a mid-contrast fallback if CSS is ignored.
+  -->
+  <style>
+    .mark {
+      fill: #4b5563;
+      stroke: #4b5563;
+    }
+    @media (prefers-color-scheme: light) {
+      .mark {
+        fill: #1f2328;
+        stroke: #1f2328;
+      }
+    }
+    @media (prefers-color-scheme: dark) {
+      .mark {
+        fill: #e6edf3;
+        stroke: #e6edf3;
+      }
+    }
+  </style>
+
+  <g class="mark" fill="#4b5563" stroke="#4b5563">
+    <!-- Targeting reticle: thick ring + inward cardinal ticks -->
+    <path fill-rule="evenodd" stroke="none" d="M74 2a72 72 0 1 1 0 144 72 72 0 1 1 0-144zm0 10a62 62 0 1 0 0 124 62 62 0 1 0 0-124z"/>
+    <rect stroke="none" x="68.5" y="12" width="11" height="23.5" rx="5.5"/>
+    <rect stroke="none" x="68.5" y="112.5" width="11" height="23.5" rx="5.5"/>
+    <rect stroke="none" x="12" y="68.5" width="23.5" height="11" rx="5.5"/>
+    <rect stroke="none" x="112.5" y="68.5" width="23.5" height="11" rx="5.5"/>
+
+    <!-- Beetle: dome head, split elytra, six rounded legs -->
+    <path stroke="none" d="M61 55.5A13 13.5 0 0 1 87 55.5Z"/>
+    <path fill-rule="evenodd" stroke="none" d="M64.5 61h19c11 0 11 3 11 14 0 17-6.5 22.5-20.5 22.5S53.5 92 53.5 75c0-11 0-14 11-14zM71 66h4v32h-4z"/>
+    <g fill="none" stroke-width="7" stroke-linecap="round">
+      <line x1="53" y1="64" x2="45.5" y2="54.5"/>
+      <line x1="95" y1="64" x2="102.5" y2="54.5"/>
+      <line x1="52" y1="78.5" x2="41.5" y2="78.5"/>
+      <line x1="96" y1="78.5" x2="106.5" y2="78.5"/>
+      <line x1="55" y1="93" x2="48.5" y2="102"/>
+      <line x1="93" y1="93" x2="99.5" y2="102"/>
+    </g>
+  </g>
+</svg>
