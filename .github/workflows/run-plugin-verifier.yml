@@ -1,15 +1,10 @@
-# Runs the IntelliJ Plugin Verifier on demand and on a weekly schedule.
-#
-# The Plugin Verifier downloads additional IDE distributions and is slow / disk-heavy, so it is
-# kept out of the main Build workflow and never blocks release-draft creation. The Gradle
-# `pluginVerification { ... }` configuration is retained so it can also be run locally.
+# IntelliJ Plugin Verifier. Also runs as the `verify` job in build.yml.
+# Kept as a standalone workflow for on-demand / weekly runs.
 
 name: Run Plugin Verifier
-
 on:
   workflow_dispatch:
   schedule:
-    # Every Monday at 06:00 UTC.
     - cron: '0 6 * * 1'
 
 permissions:
@@ -20,11 +15,9 @@ jobs:
     name: Verify plugin
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    permissions:
-      contents: read
     steps:
       - name: Maximize Build Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
           large-packages: false
@@ -36,28 +29,19 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: 17
+          java-version: 21
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      - name: Setup Plugin Verifier IDEs Cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.pluginVerifier/ides
-          key: plugin-verifier-${{ hashFiles('build/listProductsReleases.txt') }}
-
       - name: Run Plugin Verification tasks
-        run: ./gradlew verifyPlugin -Dplugin.verifier.home.dir=~/.pluginVerifier --console=plain
+        run: ./gradlew :plugin:verifyPlugin -Dplugin.verifier.home.dir=~/.pluginVerifier --console=plain
 
       - name: Collect Plugin Verifier Result
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: pluginVerifier-result
-          path: build/reports/pluginVerifier
+          path: plugin/build/reports/pluginVerifier
           retention-days: 7
           if-no-files-found: ignore

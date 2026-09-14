@@ -3,8 +3,10 @@
 > 文档状态：实施规格  
 > 目标版本：Runtime Pivot 3.0.0  
 > IDE 基线：IntelliJ IDEA 2025.3，Build 253 及以上  
-> 文档日期：2026-06-06  
+> 文档日期：2026-09-14  
 > 适用对象：后续负责完整实现、迁移、测试和验收的开发者或 AI 编码代理
+>
+> 协议覆盖：IDEA↔Agent 长连使用 [Open Agent Management Protocol (OpAMP)](https://opentelemetry.io/docs/specs/opamp/)，不再实现本文早期草稿中的自定义 `HandshakeRequest` / 换行分帧协议。
 
 ## 1. 文档目的
 
@@ -390,53 +392,64 @@ Inject Runtime Pivot Agent on launch
 - 需要 Agent 后台线程参与的命令，在 Suspend ALL 时显示“恢复后执行”或改用一次性 JDI Bridge。
 - Runtime Pivot 自己创建的 Tracepoint 默认使用 `SuspendPolicy.NONE`。
 
-## 10. 通信协议
+## 10. 通信协议（OpAMP）
 
-### 10.1 消息模型
+Runtime Pivot 3.0 的 IDEA↔Agent 通道实现 [OpAMP](https://opentelemetry.io/docs/specs/opamp/)。
+IDEA 插件担任 **OpAMP Server**（仅绑定 `127.0.0.1` 随机端口），目标 JVM 中的 Agent 担任 **OpAMP Agent** 并主动连接。
 
-协议至少包括：
+官方 protobuf 定义vendor 于 `protocol/src/main/proto/opamp/v1/`。本地仅增加 Java 生成选项，**不改变字段号与消息形状**。
+
+### 10.1 传输
+
+优先 WebSocket 推送（心跳、命令、事件）；同时提供明文 HTTP POST `/v1/opamp` 作为回退与规范要求的第二种传输。
+
+| 传输 | 帧格式 |
+| --- | --- |
+| WebSocket | Base128 varint header（当前规范值为 `0`）+ `AgentToServer` / `ServerToAgent` protobuf |
+| HTTP | `Content-Type: application/x-protobuf` 请求/响应体为纯 protobuf，无 WebSocket header |
+
+鉴权（OpAMP 规范允许 header-based tokens，本项目强制）：
+
+- `Authorization: Bearer <128-bit token>`
+- `X-Runtime-Pivot-Session-Id: <session>`
+- 拒绝非 loopback 对端、错误 token、缺失 token
+- 禁止监听 `0.0.0.0`、禁止固定端口、禁止把 token 写入普通日志
+
+### 10.2 OpAMP 概念映射
+
+| Runtime Pivot 能力 | OpAMP 字段 |
+| --- | --- |
+| 实例标识 | `AgentToServer.instance_uid`（16 字节 UUID v7） |
+| 状态 / 握手 | 首条 `AgentToServer` 带 `agent_description` + `capabilities` |
+| 健康 | `ComponentHealth`（`ReportsHealth`） |
+| 心跳 | `ReportsHeartbeat`；Server 通过 `OpAMPConnectionSettings.heartbeat_interval_seconds` 协商，默认 30s |
+| 标准能力位 | Agent：`ReportsStatus \| ReportsHealth \| ReportsHeartbeat`；Server：`AcceptsStatus \| OffersConnectionSettings` |
+| 调试/Agent 命令 | `CustomCapabilities` + `CustomMessage`（capability `io.runtime.pivot.v1`） |
+| 协议版本 | identifying attribute `runtime.pivot.protocol.version`（当前为 `3`）；不匹配时 `ServerErrorResponse` `BadRequest` |
+| 会话 | identifying attribute `runtime.pivot.session.id` |
+
+CustomMessage type 与 payload（`runtime_pivot.proto`）：
 
 ```text
-HandshakeRequest
-HandshakeResponse
-CommandRequest
-CommandAccepted
-CommandProgress
-CommandResult
-CommandError
-EventBatch
-CancelCommand
-Heartbeat
-ReleaseHandle
+CommandRequest / CommandAccepted / CommandProgress / CommandResult
+CommandError / CancelCommand / EventBatch
 ```
 
-公共字段：
+命令名包括：`ping`、`class.loaders`、`class.loaded`、`class.dump`、
+`class.loading.timeline`、`transformer.list`。后续对象/Probe 命令继续走同一 CustomMessage 通道，不恢复旧的 `ActionExecutor` 字符串协议。
 
-```json
-{
-  "protocolVersion": 1,
-  "sessionId": "uuid",
-  "requestId": "uuid",
-  "type": "class.list",
-  "timestampNanos": 0,
-  "payload": {}
-}
-```
+### 10.3 必须支持
 
-### 10.2 必须支持
+- 官方 OpAMP 二进制消息，禁止以换行作为消息边界。
+- `requestId` 关联命令与结果。
+- 超时与取消（`CancelCommand` + Agent 侧 `CommandContext`）。
+- 最大消息体限制（默认 4 MiB）。
+- capability 协商（标准 bits + custom capability 交集）。
+- 协议版本不兼容的明确 `ServerErrorResponse`。
+- Event Batch 与有界队列背压，记录 `dropped_events`。
+- 大字节码通过 `ClassDumpResult.bytecode` 返回；后续可按 OpAMP 分块扩展，但不得改用换行帧。
 
-- 长度分帧，禁止以换行作为唯一消息边界。
-- requestId 关联。
-- 超时。
-- 取消。
-- 最大消息体限制。
-- 大字节码/文件分块。
-- capability 协商。
-- 协议版本不兼容的明确错误。
-- Event Batch 和背压。
-- 丢弃事件计数。
-
-### 10.3 结果模型
+### 10.4 结果模型
 
 Agent Provider 不再返回“已打印到控制台”字符串，而是返回 DTO：
 
@@ -894,14 +907,14 @@ Run Configuration Override：
 - 会话启动、切换、停止生命周期正确。
 - UI 自动化测试覆盖主要状态。
 
-### Phase 3：协议和 Agent 连接
+### Phase 3：协议和 Agent 连接（OpAMP）
 
 任务：
 
-- 实现 protocol 模块。
-- loopback、随机端口、token、handshake。
-- command/result/progress/cancel。
-- capability 协商。
+- 实现 `protocol` 模块：官方 OpAMP protobuf + Runtime Pivot CustomMessage。
+- loopback WebSocket/HTTP、随机端口、token、AgentToServer handshake。
+- command/result/progress/cancel 走 CustomMessage。
+- 标准 capabilities bits 与 custom capability 协商。
 
 验收：
 
@@ -1123,6 +1136,9 @@ agent JDK matrix
 - [Plugin Compatibility](https://plugins.jetbrains.com/docs/intellij/verifying-plugin-compatibility.html)
 - [Internal API Migration](https://plugins.jetbrains.com/docs/intellij/api-internal.html)
 - [Tool Windows](https://plugins.jetbrains.com/docs/intellij/tool-windows.html)
+- [OpAMP Specification](https://opentelemetry.io/docs/specs/opamp/)
+- [opamp-spec protobuf](https://github.com/open-telemetry/opamp-spec)
+- [IntelliJ Platform Plugin Template](https://github.com/JetBrains/intellij-platform-plugin-template)
 - [IntelliJ Community 源码](https://github.com/JetBrains/intellij-community)
 
 实施时应以 IntelliJ IDEA 2025.3 对应的 253 分支/源码为准，不直接依据较新 master 中尚未进入

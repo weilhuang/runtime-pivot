@@ -1,284 +1,219 @@
-# GitHub Actions Workflow for testing and preparing the plugin release in two stages:
-# - Run the unit / integration / headless UI tests on every push and pull request.
-# - On non-PR events, detect whether the current project version still needs a release.
-# - When it does, build the plugin ZIP and create or refresh a GitHub Release *draft*.
+# GitHub Actions workflow for building, testing, verifying, and preparing plugin release drafts.
+# Modeled on https://github.com/JetBrains/intellij-platform-plugin-template `.github/workflows/build.yml`.
 #
-# Publishing to the JetBrains Marketplace is intentionally NOT done here. It is handled by
-# release.yml, which only runs after a maintainer manually publishes the drafted GitHub Release.
+# - Build the plugin ZIP with the `buildPlugin` task and upload it as a workflow artifact.
+# - Run unit, integration, Agent premain, and headless UI tests.
+# - Run `verifyPlugin` and upload Plugin Verifier reports.
+# - Create a draft GitHub release on non-pull-request runs.
 #
-# GitHub Actions reference: https://help.github.com/en/actions
+# GitHub Actions reference: https://docs.github.com/actions
 
 name: Build
-
 on:
-  # Pushes to the main branch may prepare a release draft.
   push:
     branches: [ main ]
-  # Every pull request only runs the tests (never prepares a release).
   pull_request:
-  # Allow manual runs (also able to prepare a release draft).
-  workflow_dispatch:
-
-# Restrictive default; individual jobs widen this only where required.
-permissions:
-  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Cancel superseded pull request runs for fast feedback, but never cancel a
-  # release-producing push/dispatch run mid-flight: that could interrupt a draft
-  # update between editing the release and uploading the ZIP. Such runs serialize
-  # within the group instead.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
 
-  # Run the test suite split into unit / integration / headless UI tiers.
-  test:
-    name: Test
+  build:
+    name: Build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Fetch Sources
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: zulu
-          java-version: 17
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      # IntelliJ Platform test fixtures are not compatible with the Gradle Configuration Cache,
-      # so the test command disables it; --continue runs every tier even if one fails.
-      - name: Run tests
-        run: >-
-          ./gradlew unitTest integrationTest ideaUiTest
-          --continue
-          --no-configuration-cache
-          --console=plain
-
-      # Test reports are only useful (and only uploaded) when something failed.
-      - name: Upload test reports
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports
-          path: |
-            build/reports/tests
-            build/test-results
-          retention-days: 7
-          if-no-files-found: ignore
-
-  # Decide whether the current project version still needs a release draft.
-  # Runs only for non-PR events. Reads the version from gradle.properties (the single source
-  # of truth) and distinguishes draft / published / tagged / brand-new states.
-  detect:
-    name: Detect release state
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      release_tag: ${{ steps.state.outputs.release_tag }}
-      should_prepare_release: ${{ steps.state.outputs.should_prepare_release }}
-    steps:
-      - name: Fetch Sources
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # tags are needed for the "tag already exists" check
-
-      - name: Read project version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(sed -n -E 's/^[[:space:]]*pluginVersion[[:space:]]*=[[:space:]]*([^[:space:]#]+).*/\1/p' gradle.properties | head -n1)"
-          if [ -z "${VERSION}" ]; then
-            echo "::error::Unable to read pluginVersion from gradle.properties"
-            exit 1
-          fi
-          echo "Resolved project version: ${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Determine release state
-        id: state
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          should_prepare_release=false
-          # New releases use the bare project version (matching the CHANGELOG compare links and
-          # the project's git-tag history). Legacy releases created by the previous workflow used
-          # a "v" prefix, so detection accepts BOTH forms and operates on whichever already exists.
-          release_tag="${VERSION}"
-
-          existing=""
-          for cand in "${VERSION}" "v${VERSION}"; do
-            if gh release view "${cand}" >/dev/null 2>&1; then
-              existing="${cand}"
-              break
-            fi
-          done
-
-          if [ -n "${existing}" ]; then
-            release_tag="${existing}"
-            # A GitHub Release already exists for this version. Use its draft flag (NOT mere
-            # existence) to decide whether it is publishable or still in progress.
-            is_draft="$(gh release view "${existing}" --json isDraft --jq .isDraft)"
-            if [ "${is_draft}" = "true" ]; then
-              echo "Draft release ${existing} already exists -> refresh it"
-              should_prepare_release=true
-            else
-              echo "Published release ${existing} already exists -> skip"
-            fi
-          elif git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null \
-            || git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-            # No release, but a tag for this version is already present -> treat as released.
-            echo "Tag for ${VERSION} already exists without a release -> skip"
-          else
-            echo "No release and no tag for ${VERSION} -> create a new draft (${release_tag})"
-            should_prepare_release=true
-          fi
-
-          echo "should_prepare_release=${should_prepare_release}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
-
-  # Build the plugin and create / refresh the GitHub Release draft for manual verification.
-  # If a maintainer accepts and publishes it, release.yml takes over.
-  releaseDraft:
-    name: Release draft
-    needs: [ test, detect ]
-    if: >-
-      github.event_name != 'pull_request' &&
-      needs.detect.outputs.should_prepare_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    # A fixed per-branch group so concurrent runs cannot modify the same draft at once;
-    # do not cancel an in-flight run mid-update (it could corrupt the draft).
-    concurrency:
-      group: release-draft-${{ github.ref }}
-      cancel-in-progress: false
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.detect.outputs.version }}
-      # Tag to operate on: the existing release's tag (possibly legacy "v"-prefixed) or, for a
-      # brand-new release, the bare project version. Resolved by the detect job.
-      RELEASE_TAG: ${{ needs.detect.outputs.release_tag }}
-    steps:
-      - name: Fetch Sources
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: zulu
-          java-version: 17
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      - name: Build plugin
-        run: ./gradlew buildPlugin --console=plain
-
-      - name: Verify distribution exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          zips=(build/distributions/*.zip)
-          if [ ${#zips[@]} -eq 0 ]; then
-            echo "::error::No plugin ZIP was produced in build/distributions"
-            exit 1
-          fi
-          printf 'Found distribution: %s\n' "${zips[@]}"
-
-      - name: Generate release notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Upcoming-release notes normally live under the [Unreleased] heading; fall back to a
-          # version-specific section (in case notes were already moved), then to a plain default.
-          NOTES="$(./gradlew getChangelog --console=plain -q --no-header --no-configuration-cache --unreleased 2>/dev/null || true)"
-          if [ -z "${NOTES}" ]; then
-            NOTES="$(./gradlew getChangelog --console=plain -q --no-header --no-configuration-cache --version "${VERSION}" 2>/dev/null || true)"
-          fi
-          if [ -z "${NOTES}" ]; then
-            NOTES="Release ${VERSION}"
-          fi
-          printf '%s\n' "${NOTES}" > RELEASE_NOTES.md
-          echo "Generated release notes:"
-          cat RELEASE_NOTES.md
-
-      - name: Create or refresh draft release
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            # Re-check at execution time: a maintainer may have published the release between the
-            # detect job and now. Never overwrite a published release or revert it back to a draft.
-            is_draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
-            if [ "${is_draft}" != "true" ]; then
-              echo "::error::Release ${RELEASE_TAG} has been published; refusing to modify a published release."
-              exit 1
-            fi
-            echo "Refreshing existing draft release ${RELEASE_TAG}"
-            gh release edit "${RELEASE_TAG}" \
-              --target "${GITHUB_SHA}" \
-              --title "${RELEASE_TAG}" \
-              --notes-file RELEASE_NOTES.md
-            gh release upload "${RELEASE_TAG}" build/distributions/*.zip --clobber
-          else
-            echo "Creating new draft release ${RELEASE_TAG}"
-            gh release create "${RELEASE_TAG}" \
-              --draft \
-              --target "${GITHUB_SHA}" \
-              --title "${RELEASE_TAG}" \
-              --notes-file RELEASE_NOTES.md \
-              build/distributions/*.zip
-          fi
-
-  # Qodana static analysis. Independent and non-blocking: it never gates the release draft.
-  inspectCode:
-    name: Inspect code
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      checks: write
-      pull-requests: write
     steps:
       - name: Maximize Build Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
           large-packages: false
 
       - name: Fetch Sources
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}  # the real PR commit, not the merge commit
-          fetch-depth: 0  # full history is required for pull request analysis
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: 17
+          java-version: 21
 
-      - name: Qodana - Code Inspection
-        uses: JetBrains/qodana-action@v2024.2
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        run: ./gradlew :plugin:buildPlugin --console=plain
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          cache-default-branch-only: true
+          name: plugin-distribution
+          path: plugin/build/distributions/*.zip
+
+  test:
+    name: Test
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize Build Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Fetch Sources
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Run Tests
+        run: >-
+          ./gradlew forbiddenApiScan unitTest integrationTest ideaUiTest
+          --continue
+          --no-configuration-cache
+          --console=plain
+
+      - name: Collect Tests Result
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-result
+          path: |
+            **/build/reports/tests
+            **/build/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  agent-matrix:
+    name: Agent JDK ${{ matrix.agent-jdk }}
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent-jdk: [ 8, 11, 17, 21 ]
+    steps:
+      - name: Fetch Sources
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          # Last version becomes JAVA_HOME. Gradle 9 must run on 21; the
+          # matrix JDK is used only for the Agent child process via toolchain.
+          java-version: |
+            ${{ matrix.agent-jdk }}
+            21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Agent integration tests
+        run: ./gradlew :integration-tests:test -PagentJdk=${{ matrix.agent-jdk }} --no-configuration-cache --console=plain
+
+  verify:
+    name: Verify plugin
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize Build Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Fetch Sources
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Run Plugin Verification tasks
+        run: ./gradlew :plugin:verifyPlugin --console=plain
+
+      - name: Collect Plugin Verifier Result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pluginVerifier-result
+          path: plugin/build/reports/pluginVerifier
+          retention-days: 7
+          if-no-files-found: ignore
+
+  releaseDraft:
+    name: Release draft
+    if: github.event_name != 'pull_request'
+    needs: [ build, test, verify ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch Sources
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Remove Old Release Drafts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/{owner}/{repo}/releases \
+            --jq '.[] | select(.draft == true) | .id' \
+            | xargs -r -I '{}' gh api -X DELETE repos/{owner}/{repo}/releases/{}
+
+      - name: Create Release Draft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(./gradlew properties --property version --quiet --console=plain | tail -n 1 | cut -f2- -d ' ')"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            DRAFT="$(gh release view "$VERSION" --json isDraft --jq .isDraft 2>/dev/null || echo true)"
+            if [ "$DRAFT" != "true" ]; then
+              echo "Release $VERSION is already published; skipping draft creation"
+              exit 0
+            fi
+          fi
+          mkdir -p build/tmp
+          RELEASE_NOTE="./build/tmp/release_note.txt"
+          ./gradlew getChangelog --unreleased --no-header --quiet --console=plain --output-file="$RELEASE_NOTE" || true
+          if [ ! -s "$RELEASE_NOTE" ]; then
+            echo "Runtime Pivot ${VERSION}" > "$RELEASE_NOTE"
+          fi
+          gh release create "$VERSION" \
+            --draft \
+            --title "$VERSION" \
+            --notes-file "$RELEASE_NOTE" \
+            --target "$GITHUB_SHA"

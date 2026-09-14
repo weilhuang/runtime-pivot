@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package runtime.pivot.v1;
+
+option java_package = "com.runtime.pivot.protocol.proto";
+option java_outer_classname = "RuntimePivotProto";
+option java_multiple_files = true;
+
+// CustomMessage.capability = "io.runtime.pivot.v1"
+// CustomMessage.type = one of the message type names below.
+
+message CommandRequest {
+  string request_id = 1;
+  string command = 2;
+  int64 timeout_ms = 3;
+  bytes payload = 4;
+}
+
+message CommandAccepted {
+  string request_id = 1;
+}
+
+message CommandProgress {
+  string request_id = 1;
+  int32 percent = 2;
+  string message = 3;
+}
+
+message CommandResult {
+  string request_id = 1;
+  string command = 2;
+  bytes payload = 3;
+}
+
+message CommandError {
+  string request_id = 1;
+  string code = 2;
+  string message = 3;
+  string stack = 4;
+}
+
+message CancelCommand {
+  string request_id = 1;
+}
+
+message EventBatch {
+  repeated RuntimeEvent events = 1;
+  uint64 dropped_events = 2;
+}
+
+message RuntimeEvent {
+  string kind = 1;
+  int64 timestamp_nanos = 2;
+  map<string, string> attributes = 3;
+}
+
+message PingRequest {
+  string echo = 1;
+}
+
+message PingResult {
+  string echo = 1;
+  int64 agent_nano_time = 2;
+  int32 java_version = 3;
+}
+
+message ClassLoaderNode {
+  string loader_id = 1;
+  string name = 2;
+  string parent_id = 3;
+  int32 loaded_class_count = 4;
+}
+
+message ClassLoaderTreeResult {
+  repeated ClassLoaderNode nodes = 1;
+}
+
+message LoadedClassesRequest {
+  string name_prefix = 1;
+  string loader_id = 2;
+  int32 limit = 3;
+}
+
+message LoadedClassInfo {
+  string class_name = 1;
+  string loader_id = 2;
+  bool interface_type = 3;
+}
+
+message LoadedClassesResult {
+  repeated LoadedClassInfo classes = 1;
+  int32 truncated = 2;
+}
+
+message ClassDumpRequest {
+  string class_name = 1;
+  string loader_id = 2;
+}
+
+message ClassDumpResult {
+  string class_name = 1;
+  string loader_id = 2;
+  bytes bytecode = 3;
+  string sha256 = 4;
+  bool modifiable = 5;
+}
+
+message TransformerInfo {
+  string id = 1;
+  string kind = 2;
+  string description = 3;
+}
+
+message RuntimePivotTransformerResult {
+  repeated TransformerInfo transformers = 1;
+  bool retransform_supported = 2;
+  bool redefine_supported = 3;
+}
+
+message ClassLoadingTimelineRequest {
+  int32 limit = 1;
+}
+
+message ClassLoadingEvent {
+  string class_name = 1;
+  string loader_id = 2;
+  int64 timestamp_nanos = 3;
+  string event_kind = 4;
+}
+
+message ClassLoadingTimelineResult {
+  repeated ClassLoadingEvent events = 1;
+  uint64 dropped_events = 2;
+}
