@@ -1,3 +1,5 @@
+import org.gradle.jvm.toolchain.JavaToolchainService
+
 plugins {
     id("java")
 }
@@ -5,9 +7,11 @@ plugins {
 group = rootProject.group
 version = rootProject.version
 
+val agentJdkVersion = (findProperty("agentJdk")?.toString() ?: "21").toInt()
+
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(findProperty("agentJdk")?.toString() ?: "21"))
+        languageVersion.set(JavaLanguageVersion.of(21))
     }
 }
 
@@ -19,6 +23,10 @@ evaluationDependsOn(":agent:agent-bootstrap")
 evaluationDependsOn(":test-apps")
 val agentJarTask = project(":agent:agent-bootstrap").tasks.named("shadowJar")
 val testAppJarTask = project(":test-apps").tasks.named("jar")
+val javaToolchains = project.extensions.getByType<JavaToolchainService>()
+val agentLauncher = javaToolchains.launcherFor {
+    languageVersion.set(JavaLanguageVersion.of(agentJdkVersion))
+}
 
 dependencies {
     testImplementation(project(":protocol"))
@@ -38,6 +46,7 @@ tasks.test {
     doFirst {
         systemProperty("runtime.pivot.agent.jar", agentJarTask.get().outputs.files.singleFile.absolutePath)
         systemProperty("runtime.pivot.testapp.jar", testAppJarTask.get().outputs.files.singleFile.absolutePath)
-        systemProperty("runtime.pivot.test.java.home", System.getProperty("java.home"))
+        systemProperty("runtime.pivot.test.java.home", agentLauncher.get().metadata.installationPath.asFile.absolutePath)
+        systemProperty("runtime.pivot.test.agent.jdk", agentJdkVersion.toString())
     }
 }

@@ -113,9 +113,11 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: zulu
+          # Last version becomes JAVA_HOME. Gradle 9 must run on 21; the
+          # matrix JDK is used only for the Agent child process via toolchain.
           java-version: |
-            21
             ${{ matrix.agent-jdk }}
+            21
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4

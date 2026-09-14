@@ -29,8 +29,13 @@ public class AgentPremainIT {
         String agentJar = System.getProperty("runtime.pivot.agent.jar");
         String appJar = System.getProperty("runtime.pivot.testapp.jar");
         String javaHome = System.getProperty("runtime.pivot.test.java.home", System.getProperty("java.home"));
+        File javaBinary = new File(javaHome, "bin/java");
+        if (!javaBinary.isFile()) {
+            javaBinary = new File(javaHome, "bin/java.exe");
+        }
         assertTrue("agent jar missing", agentJar != null && new File(agentJar).isFile());
         assertTrue("test app jar missing", appJar != null && new File(appJar).isFile());
+        assertTrue("agent java binary missing: " + javaBinary, javaBinary.isFile());
 
         String token = AuthTokens.randomToken();
         OpampServer server = OpampServer.start(ConnectionConfig.builder()
@@ -40,13 +45,13 @@ public class AgentPremainIT {
         Process process = null;
         try {
             List<String> command = new ArrayList<String>();
-            command.add(new File(javaHome, "bin/java").getAbsolutePath());
+            command.add(javaBinary.getAbsolutePath());
             command.add("-javaagent:" + agentJar + "=" + server.connectionConfig().toAgentArgument());
             command.add("-jar");
             command.add(appJar);
             command.add("8000");
             process = new ProcessBuilder(command).redirectErrorStream(true).start();
-            waitUntil(server::isAgentConnected, 15_000);
+            waitUntil(server::isAgentConnected, 15_000, javaBinary);
 
             CommandResult ping = server.sendCommand(CommandRequest.newBuilder()
                     .setRequestId(UUID.randomUUID().toString())
@@ -85,7 +90,7 @@ public class AgentPremainIT {
         }
     }
 
-    private static void waitUntil(Check check, long timeoutMs) throws Exception {
+    private static void waitUntil(Check check, long timeoutMs, File javaBinary) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             if (check.ok()) {
@@ -93,7 +98,7 @@ public class AgentPremainIT {
             }
             Thread.sleep(50);
         }
-        fail("Agent did not connect via OpAMP");
+        fail("Agent did not connect via OpAMP using " + javaBinary);
     }
 
     private interface Check {
