@@ -7,6 +7,8 @@
 > 适用对象：后续负责完整实现、迁移、测试和验收的开发者或 AI 编码代理
 >
 > 协议覆盖：IDEA↔Agent 长连使用 [Open Agent Management Protocol (OpAMP)](https://opentelemetry.io/docs/specs/opamp/)，不再实现本文早期草稿中的自定义 `HandshakeRequest` / 换行分帧协议。
+>
+> Foundation 合入后的落地优先级与缺口计划见 [`runtime-pivot-3.0-roadmap.md`](./runtime-pivot-3.0-roadmap.md)。本文仍是架构、公开 API、安全与验收门禁；若与核实后的路线图决策表冲突，以路线图为准。
 
 ## 1. 文档目的
 

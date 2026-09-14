@@ -56,6 +56,10 @@ IDEA 作为 OpAMP Server，Agent 作为 OpAMP Client，使用
 
 2.x GIF walkthroughs under `doc/operation/` describe the previous breakpoint + `System.out` flow and are not the 3.0 protocol.
 
+## 3.0 实施路线图
+
+当前 `main` 已合入 3.0 **OpAMP foundation**（多模块、loopback 通信、ToolWindow 骨架）。尚未完成的能力、与规格 Phase 0–8 的对照、以及后续 PR 应遵循的 Wave 顺序，见 [`doc/runtime-pivot-3.0-roadmap.md`](doc/runtime-pivot-3.0-roadmap.md)。架构与门禁仍以 [`doc/runtime-pivot-3.0-refactoring-plan.md`](doc/runtime-pivot-3.0-refactoring-plan.md) 为准。
+
 ## Using The Plugin
 
 Enable **Inject Runtime Pivot Agent on launch** in
