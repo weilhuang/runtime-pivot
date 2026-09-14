@@ -78,6 +78,10 @@ runtime-pivot 是一个运行时增强工具集,为开发人员在调试代码�
   - [x] Dump the runtime object JSON data. 转储运行时对象json数据.
   - [x] Load JSON data to update the runtime object. 加载json数据更新运行时对象.
 
+## 3.0 实施路线图
+
+当前 `main` 已合入 3.0 **OpAMP foundation**（多模块、loopback 通信、ToolWindow 骨架）。尚未完成的能力、与规格 Phase 0–8 的对照、以及后续 PR 应遵循的 Wave 顺序，见 [`doc/runtime-pivot-3.0-roadmap.md`](doc/runtime-pivot-3.0-roadmap.md)。架构与门禁仍以 [`doc/runtime-pivot-3.0-refactoring-plan.md`](doc/runtime-pivot-3.0-refactoring-plan.md) 为准。
+
 ## Using The Plugin
 
 open attach agent.
