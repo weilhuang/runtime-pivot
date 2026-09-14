@@ -3,58 +3,30 @@
 # runtime-pivot-plugin Changelog
 
 ## [Unreleased]
-### Changed
-- 重构 GitHub Actions CI/CD 流程：分层测试（单元 / 集成 / 无头 UI 组件）、推送主分支时自动创建并刷新 Release 草稿、GitHub Release 正式发布后自动签名并上传 JetBrains Marketplace
-- Plugin Verifier 改为按需 / 每周定时单独运行，不再阻塞 Release 草稿创建
-
-## [2.0.0] - 2025-03-23
-### Refactor
-- 重构项目模块
-
-## [1.1.2] - 2024-07-15
-### Changed
-- agent升级到1.1.0
-- 修改报错信息返回展示
-- 更新issue模板
-
-## [1.1.1] - 2024-07-12
-### Changed
-- 修改一些国际化文本
-- 修改操作说明
-- MacOS对Agent Jar的操作支持
-- 默认开启探针
-
-### Changed
-- 修改操作说明
-
-## [1.1.0] - 2024-07-09
 ### Added
-- 添加一些提示文本的国际化
-- 添加双击断点列表回溯栈帧
-- 修改attach探针默认配置为false
-- 添加相应说明文档
+- Runtime Pivot 3.0 OpAMP foundation (see 3.0.0 notes)
 
-## [1.0.1] - 2024-07-06
-### Fixed
-- 解决安装目录有空格导致探针失效问题,将探针复制到用户目录再执行
+## [3.0.0]
+### Added
+- OpAMP-based IDEA↔Agent protocol (WebSocket + HTTP) with loopback bind, random port, and 128-bit token auth
+- Multi-module Gradle layout: `protocol`, `agent-*`, `plugin-*`, `integration-tests`, `test-apps`
+- Runtime Pivot ToolWindow (Sessions / Classes / Objects / Probes / Console)
+- Agent source built from this repository (shaded jar) instead of an opaque fat jar
+- Unit, integration/premain, and headless UI tests; Agent JDK matrix in CI
+- Forbidden-API scan and JetBrains-template-style Build / Verify / Release workflows
 
 ### Changed
-- 更新readme的pluginId和对比说明
-- 更新issue模板的idea错误报告
+- Platform baseline is IntelliJ IDEA 2025.3 / build 253+, plugin Java 21, Agent/protocol Java 8
+- Settings checkbox renamed to **Inject Runtime Pivot Agent on launch**
+- Global JVM queries no longer require hitting a breakpoint
 
 ### Removed
-- remove internal API 
+- Custom newline-framed handshake/command protocol from the 3.0 plan draft
+- Production use of `com.intellij.*.impl`, copied `@TestOnly` debugger utilities, and debugger-tree internals
+- Bundled untraceable `libs/runtime-pivot-agent-*-all.jar`
 
-## [1.0.0] - 2024-07-05
-### Added 
-project initialization
-- program 分析程序运行时instrument数据
-- class 分析程序运行时内存类字节码信息
-- session 分析程序运行中调试会话的代码调用信息
-- object 分析和操作程序运行时对象内存信息
-
-
-[Unreleased]: https://github.com/wl2027/runtime-pivot/compare/2.0.0...HEAD
+[Unreleased]: https://github.com/weilhuang/runtime-pivot/compare/3.0.0...HEAD
+[3.0.0]: https://github.com/weilhuang/runtime-pivot/compare/2.1.0...3.0.0
 [2.0.0]: https://github.com/wl2027/runtime-pivot/compare/1.1.2...2.0.0
 [1.1.2]: https://github.com/wl2027/runtime-pivot/compare/1.1.1...1.1.2
 [1.1.1]: https://github.com/wl2027/runtime-pivot/compare/1.1.0...1.1.1

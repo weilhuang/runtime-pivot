@@ -1,218 +1,149 @@
 import org.jetbrains.changelog.Changelog
 import org.jetbrains.changelog.markdownToHTML
-import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
-    id("java") // Java support
-    alias(libs.plugins.kotlin) // Kotlin support
-    alias(libs.plugins.intelliJPlatform) // IntelliJ Platform Gradle Plugin
-    alias(libs.plugins.changelog) // Gradle Changelog Plugin
-    alias(libs.plugins.qodana) // Gradle Qodana Plugin
-    alias(libs.plugins.kover) // Gradle Kover Plugin
+    id("java")
+    alias(libs.plugins.kotlin) apply false
+    alias(libs.plugins.intelliJPlatform) apply false
+    alias(libs.plugins.intelliJPlatformModule) apply false
+    alias(libs.plugins.changelog)
+    alias(libs.plugins.qodana)
+    alias(libs.plugins.kover) apply false
+    alias(libs.plugins.shadow) apply false
+    alias(libs.plugins.protobuf) apply false
 }
 
 group = providers.gradleProperty("pluginGroup").get()
 version = providers.gradleProperty("pluginVersion").get()
 
-// Set the JVM language level used to build the project.
-kotlin {
-    jvmToolchain(17)
-}
-
-// Configure project's dependencies
-repositories {
-//    maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/") }
-    maven { url = uri("https://repo.huaweicloud.com/repository/maven/") }
-    mavenCentral()
-//    mavenLocal()
-//    maven(url = "https://maven.aliyun.com/repository/public")
-//    maven(url = "https://maven-central.storage-download.googleapis.com/repos/central/data/")
-//    maven(url = "https://www.jetbrains.com/intellij-repository/releases")
-//    maven(url = "https://jitpack.io")
-
-    // IntelliJ Platform Gradle Plugin Repositories Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-repositories-extension.html
-    intellijPlatform {
-        defaultRepositories()
-    }
-}
-
-// Dependencies are managed with Gradle version catalog - read more: https://docs.gradle.org/current/userguide/platforms.html#sub:version-catalog
-dependencies {
-    implementation("cn.hutool:hutool-all:5.8.16")
-    implementation(fileTree(projectDir.resolve("libs")) {
-        include("*.jar")
-    })
-//    implementation(files("E:\\002_Code\\000_github\\IDEA\\runtime-pivot\\runtime-pivot-agent\\build\\libs\\runtime-pivot-agent-1.0.0.RELEASE-all.jar"))
-//    implementation(files("./../aa/runtime-pivot-agent\\build\\libs\\runtime-pivot-agent-1.0.0.RELEASE-all.jar"))
-//println("agentLib:"+fileTree(projectDir.resolve("libs"));
-    
-    testImplementation(libs.junit)
-
-    // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
-    intellijPlatform {
-        create(providers.gradleProperty("platformType"), providers.gradleProperty("platformVersion"))
-
-        // Plugin Dependencies. Uses `platformBundledPlugins` property from the gradle.properties file for bundled IntelliJ Platform plugins.
-        bundledPlugins(providers.gradleProperty("platformBundledPlugins").map { it.split(',') })
-
-        // Plugin Dependencies. Uses `platformPlugins` property from the gradle.properties file for plugin from JetBrains Marketplace.
-        plugins(providers.gradleProperty("platformPlugins").map { it.split(',') })
-
-        instrumentationTools()
-        pluginVerifier()
-        zipSigner()
-        testFramework(TestFrameworkType.Platform)
-    }
-}
-
-// Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html
-intellijPlatform {
-    pluginConfiguration {
-        version = providers.gradleProperty("pluginVersion")
-
-        // Extract the <!-- Plugin description --> section from README.md and provide for the plugin's manifest
-        description = providers.fileContents(layout.projectDirectory.file("README.md")).asText.map {
-            val start = "<!-- Plugin description -->"
-            val end = "<!-- Plugin description end -->"
-
-            with(it.lines()) {
-                if (!containsAll(listOf(start, end))) {
-                    throw GradleException("Plugin description section not found in README.md:\n$start ... $end")
-                }
-                subList(indexOf(start) + 1, indexOf(end)).joinToString("\n").let(::markdownToHTML)
-            }
-        }
-
-        val changelog = project.changelog // local variable for configuration cache compatibility
-        // Get the latest available change notes from the changelog file
-        changeNotes = providers.gradleProperty("pluginVersion").map { pluginVersion ->
-            with(changelog) {
-                renderItem(
-                    (getOrNull(pluginVersion) ?: getUnreleased())
-                        .withHeader(false)
-                        .withEmptySections(false),
-                    Changelog.OutputType.HTML,
-                )
-            }
-        }
-
-        ideaVersion {
-            sinceBuild = providers.gradleProperty("pluginSinceBuild")
-            untilBuild = providers.gradleProperty("pluginUntilBuild")
-        }
-    }
-
-    signing {
-        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
-        privateKey = providers.environmentVariable("PRIVATE_KEY")
-        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
-    }
-
-    publishing {
-        token = providers.environmentVariable("PUBLISH_TOKEN")
-        // The pluginVersion is based on the SemVer (https://semver.org) and supports pre-release labels, like 2.1.7-alpha.3
-        // Specify pre-release label to publish the plugin in a custom Release Channel automatically. Read more:
-        // https://plugins.jetbrains.com/docs/intellij/deployment.html#specifying-a-release-channel
-        channels = providers.gradleProperty("pluginVersion").map { listOf(it.substringAfter('-', "").substringBefore('.').ifEmpty { "default" }) }
-    }
-
-    pluginVerification {
-        ides {
-            recommended()
-        }
-    }
-}
-
-// Configure Gradle Changelog Plugin - read more: https://github.com/JetBrains/gradle-changelog-plugin
 changelog {
     groups.empty()
     repositoryUrl = providers.gradleProperty("pluginRepositoryUrl")
 }
 
-// Configure Gradle Kover Plugin - read more: https://github.com/Kotlin/kotlinx-kover#configuration
-kover {
-    reports {
-        total {
-            xml {
-                onCheck = true
-            }
-        }
-    }
-}
+val forbiddenApiScan by tasks.registering {
+    group = "verification"
+    description = "Fails if production sources use forbidden IDEA impl/Internal/TestOnly APIs or JDK private reflection."
+    val roots = layout.projectDirectory
+    doLast {
+        val productionDirs = listOf(
+            "plugin/src/main/java",
+            "plugin/plugin-core/src/main/java",
+            "plugin/plugin-debugger/src/main/java",
+            "plugin/plugin-ui/src/main/java",
+            "protocol/src/main/java",
+            "agent/agent-bootstrap/src/main/java",
+            "agent/agent-core/src/main/java",
+            "agent/agent-probe/src/main/java",
+        ).map { roots.dir(it).asFile }.filter { it.exists() }
 
-tasks {
-    withType<JavaCompile> {
-        sourceCompatibility = "17"
-        targetCompatibility = "17"
-        options.encoding = "UTF-8"
-    }
-    
-    wrapper {
-        gradleVersion = providers.gradleProperty("gradleVersion").get()
-    }
-
-    publishPlugin {
-        dependsOn(patchChangelog)
-    }
-}
-
-intellijPlatformTesting {
-    // The CI test stage is split into three tiers backed by the single `test` source set
-    // (selected by package). They are routed through the IntelliJ Platform test runtime so
-    // that BasePlatformTestCase fixtures and Swing components work without a running IDE.
-    //
-    // IntelliJ Platform test fixtures are not compatible with the Gradle Configuration Cache,
-    // so each task is explicitly marked incompatible (the CI workflow also passes
-    // --no-configuration-cache) to avoid cache-serialization failures after tests pass.
-    testIde {
-        register("unitTest") {
-            task {
-                group = "verification"
-                description = "Runs fast unit tests that do not require an IntelliJ Platform fixture."
-                useJUnit()
-                filter { includeTestsMatching("com.runtime.pivot.plugin.unit.*") }
-                systemProperty("java.awt.headless", "true")
-                notCompatibleWithConfigurationCache("IntelliJ Platform test runtime is not configuration-cache compatible")
-            }
-        }
-        register("integrationTest") {
-            task {
-                group = "verification"
-                description = "Runs IntelliJ Platform integration tests (BasePlatformTestCase)."
-                useJUnit()
-                filter { includeTestsMatching("com.runtime.pivot.plugin.integration.*") }
-                systemProperty("java.awt.headless", "true")
-                notCompatibleWithConfigurationCache("IntelliJ Platform test runtime is not configuration-cache compatible")
-            }
-        }
-        register("ideaUiTest") {
-            task {
-                group = "verification"
-                description = "Runs headless Swing/UI component tests (no RemoteRobot server)."
-                useJUnit()
-                filter { includeTestsMatching("com.runtime.pivot.plugin.ui.*") }
-                systemProperty("java.awt.headless", "true")
-                notCompatibleWithConfigurationCache("IntelliJ Platform test runtime is not configuration-cache compatible")
-            }
-        }
-    }
-
-    runIde {
-        register("runIdeForUiTests") {
-            task {
-                jvmArgumentProviders += CommandLineArgumentProvider {
-                    listOf(
-                        "-Drobot-server.port=8082",
-                        "-Dide.mac.message.dialogs.as.sheets=false",
-                        "-Djb.privacy.policy.text=<!--999.999-->",
-                        "-Djb.consents.confirmation.enabled=false",
-                    )
+        val violations = mutableListOf<String>()
+        productionDirs.forEach { dir ->
+            dir.walkTopDown()
+                .filter { it.isFile && it.extension == "java" }
+                .forEach { file ->
+                    val rel = file.relativeTo(roots.asFile).path.replace('\\', '/')
+                    val text = file.readText()
+                    val lines = text.lines()
+                    lines.forEachIndexed { index, line ->
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("import ") && trimmed.contains(".impl.")) {
+                            violations += "$rel:${index + 1}: forbidden impl import: $trimmed"
+                        }
+                        if (trimmed.contains("sun.instrument") || trimmed.contains("jdk.internal")) {
+                            violations += "$rel:${index + 1}: forbidden JDK private API: $trimmed"
+                        }
+                    }
+                    if (rel.contains("plugin") && text.contains("@TestOnly")) {
+                        violations += "$rel: production plugin code must not use @TestOnly"
+                    }
+                    if (isDropFrameWhitelist(rel).not() && text.contains("XDropFrameHandler")) {
+                        violations += "$rel: XDropFrameHandler must stay isolated in DropFrameCapability"
+                    }
+                    if (usesIdeaReflection(text)) {
+                        violations += "$rel: forbidden reflection into IDEA or JDK private APIs"
+                    }
                 }
-            }
-
-            plugins {
-                robotServerPlugin()
-            }
         }
+        if (violations.isNotEmpty()) {
+            throw GradleException("Forbidden API scan failed:\n" + violations.joinToString("\n"))
+        }
+    }
+}
+
+fun isDropFrameWhitelist(path: String): Boolean {
+    return path.endsWith("plugin/plugin-debugger/src/main/java/com/runtime/pivot/plugin/debugger/DropFrameCapability.java")
+}
+
+fun usesIdeaReflection(source: String): Boolean {
+    val hasReflection = source.contains("Class.forName") ||
+        source.contains("getDeclaredField") ||
+        source.contains("getDeclaredMethod") ||
+        source.contains("setAccessible")
+    if (!hasReflection) {
+        return false
+    }
+    return source.contains("\"com.intellij.") || source.contains("sun.instrument") || source.contains("jdk.internal")
+}
+
+tasks.register("unitTest") {
+    group = "verification"
+    description = "Runs fast unit tests that do not require an IntelliJ Platform fixture."
+    dependsOn(
+        ":protocol:test",
+        ":agent:agent-core:test",
+        ":agent:agent-probe:test",
+        ":plugin:unitTest",
+    )
+}
+
+tasks.register("integrationTest") {
+    group = "verification"
+    description = "Runs Agent/OpAMP integration tests and IntelliJ Platform integration tests."
+    dependsOn(
+        ":integration-tests:test",
+        ":plugin:integrationTest",
+    )
+}
+
+tasks.register("ideaUiTest") {
+    group = "verification"
+    description = "Runs headless Swing/UI component tests (no RemoteRobot server)."
+    dependsOn(":plugin:ideaUiTest")
+}
+
+tasks.register("verifyPluginCompat") {
+    group = "verification"
+    description = "Runs IntelliJ Plugin Verifier via the plugin module."
+    dependsOn(":plugin:verifyPlugin")
+}
+
+tasks.named("check") {
+    dependsOn(forbiddenApiScan, "unitTest", "integrationTest", "ideaUiTest")
+}
+
+tasks.register("printPluginDescription") {
+    doLast {
+        val readme = layout.projectDirectory.file("README.md").asFile.readText()
+        val start = "<!-- Plugin description -->"
+        val end = "<!-- Plugin description end -->"
+        val lines = readme.lines()
+        if (!lines.contains(start) || !lines.contains(end)) {
+            throw GradleException("Plugin description section not found in README.md")
+        }
+        println(markdownToHTML(lines.subList(lines.indexOf(start) + 1, lines.indexOf(end)).joinToString("\n")))
+    }
+}
+
+tasks.register("renderChangelog") {
+    doLast {
+        println(
+            changelog.renderItem(
+                (changelog.getOrNull(providers.gradleProperty("pluginVersion").get()) ?: changelog.getUnreleased())
+                    .withHeader(false)
+                    .withEmptySections(false),
+                Changelog.OutputType.HTML,
+            ),
+        )
     }
 }

@@ -1,0 +1,44 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.runtime.pivot.plugin</id>
+    <name>Runtime Pivot</name>
+    <vendor>wl2027</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.all</depends>
+    <depends>com.intellij.java</depends>
+
+    <resource-bundle>messages.RuntimePivotBundle</resource-bundle>
+
+    <projectListeners>
+        <listener class="com.runtime.pivot.plugin.debugger.SessionLifecycleListener"
+                  topic="com.intellij.xdebugger.XDebuggerManagerListener"/>
+    </projectListeners>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <java.programPatcher implementation="com.runtime.pivot.plugin.core.RuntimeJavaAgentConfig"/>
+        <projectService serviceImplementation="com.runtime.pivot.plugin.core.RuntimePivotOpampService"/>
+        <projectService serviceImplementation="com.runtime.pivot.plugin.core.RuntimePivotSettings"/>
+        <projectConfigurable parentId="tools"
+                             id="RuntimePivotConfigurable"
+                             displayName="Runtime Pivot"
+                             instance="com.runtime.pivot.plugin.ui.RuntimePivotConfigurable"/>
+        <toolWindow id="Runtime Pivot"
+                    anchor="bottom"
+                    icon="/META-INF/pluginIcon.svg"
+                    factoryClass="com.runtime.pivot.plugin.ui.RuntimePivotToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <action id="RuntimePivot.OpenToolWindow"
+                class="com.runtime.pivot.plugin.ui.OpenRuntimePivotAction"
+                text="Open Runtime Pivot"
+                description="Open the Runtime Pivot tool window and start the loopback OpAMP server">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <group id="RuntimePivot.MainMenu" text="Runtime Pivot" popup="true">
+            <reference ref="RuntimePivot.OpenToolWindow"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+        </group>
+    </actions>
+</idea-plugin>

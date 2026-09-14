@@ -1,33 +1,23 @@
-# GitHub Actions Workflow for running the headless Swing/UI component tests (the `ideaUiTest`
-# Gradle task) on Linux, Windows, and macOS.
-#
-# These are plain headless component tests, so this workflow does NOT start a RemoteRobot server
-# and does NOT launch a full IDE. If the project later gains real RemoteRobot client tests, add a
-# separate workflow that runs runIdeForUiTests + robot-server and the RemoteRobot client.
-#
-# Triggered manually.
+# Headless Swing/UI component tests (`ideaUiTest`) on Linux, Windows, and macOS.
+# These do not start a RemoteRobot server. Modeled on the JetBrains plugin template UI test job split.
 
 name: Run UI Tests
-
 on:
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-
   ideaUiTest:
     name: UI tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
-
     steps:
       - name: Fetch Sources
         uses: actions/checkout@v4
@@ -36,28 +26,22 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: 17
+          java-version: 21
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Make gradlew executable
-        shell: bash
-        run: chmod +x gradlew
-
-      # Run via the Gradle wrapper through bash on every OS (Git Bash is available on Windows).
       - name: Run headless Swing/UI component tests
         shell: bash
         run: ./gradlew ideaUiTest --no-configuration-cache --console=plain
 
-      # Upload a separate, short-lived report per OS, only when the tests fail.
       - name: Upload UI test report
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: ui-test-report-${{ matrix.os }}
           path: |
-            build/reports/tests
-            build/test-results
+            **/build/reports/tests
+            **/build/test-results
           retention-days: 7
           if-no-files-found: ignore

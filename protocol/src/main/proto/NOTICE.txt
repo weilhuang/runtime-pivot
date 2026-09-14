@@ -1,0 +1,8 @@
+Vendored OpenTelemetry OpAMP protobuf definitions.
+
+Source: https://github.com/open-telemetry/opamp-spec (Apache License 2.0)
+
+Local additions are limited to Java protobuf options (`java_package`,
+`java_outer_classname`, `java_multiple_files`) so the Runtime Pivot protocol
+module can generate Java 8-compatible sources. Message shapes and field numbers
+are unchanged from the specification.

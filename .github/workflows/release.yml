@@ -1,31 +1,30 @@
-# Publishes the plugin to the JetBrains Marketplace.
-#
-# This runs ONLY after a maintainer manually publishes a GitHub Release (the draft created by
-# build.yml). It is never triggered by a push or by draft creation, so Marketplace credentials
-# are only read for a trusted, human-approved "release: published" event.
+# Publishes the plugin to the JetBrains Marketplace after a GitHub Release is published.
+# Modeled on https://github.com/JetBrains/intellij-platform-plugin-template `.github/workflows/release.yml`.
 
 name: Release
-
 on:
   release:
-    types: [ published ]
+    types: [ prereleased, released ]
 
-# Avoid double-publishing if the event is delivered more than once for the same tag.
 concurrency:
   group: marketplace-publish-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 jobs:
-  publish:
-    name: Publish to JetBrains Marketplace
+  release:
+    name: Publish Plugin
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
     steps:
-      - name: Fetch Sources (at the released tag)
+      - name: Maximize Build Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Fetch Sources
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
@@ -34,62 +33,32 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: 17
+          java-version: 21
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      # The release tag must exactly match the project version that will actually be published.
-      - name: Verify release tag matches project version
-        shell: bash
+      - name: Patch Changelog
+        if: ${{ github.event.release.body != '' }}
+        env:
+          CHANGELOG: ${{ github.event.release.body }}
         run: |
-          set -euo pipefail
-          VERSION="$(./gradlew properties --console=plain -q --no-configuration-cache | grep "^version:" | cut -f2- -d ' ')"
-          if [ -z "${VERSION}" ]; then
-            echo "::error::Unable to read project version from Gradle properties"
-            exit 1
-          fi
-          TAG="${{ github.event.release.tag_name }}"
-          # Accept both the bare version and the legacy "v"-prefixed form (e.g. v2.0.0).
-          NORMALIZED_TAG="${TAG#v}"
-          echo "Project version: ${VERSION}"
-          echo "Release tag:     ${TAG} (normalized: ${NORMALIZED_TAG})"
-          if [ "${NORMALIZED_TAG}" != "${VERSION}" ]; then
-            echo "::error::Release tag '${TAG}' does not match project version '${VERSION}'"
-            exit 1
-          fi
+          RELEASE_NOTE="./build/tmp/release_note.txt"
+          mkdir -p "$(dirname "$RELEASE_NOTE")"
+          echo "$CHANGELOG" > "$RELEASE_NOTE"
+          ./gradlew patchChangelog --release-note-file="$RELEASE_NOTE"
 
-      # Fail early (and clearly) when a publishing/signing secret is missing. Only the names are
-      # printed, never the values.
-      - name: Check required secrets
+      - name: Publish Plugin
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          missing=()
-          [ -n "${PUBLISH_TOKEN:-}" ] || missing+=("PUBLISH_TOKEN")
-          [ -n "${CERTIFICATE_CHAIN:-}" ] || missing+=("CERTIFICATE_CHAIN")
-          [ -n "${PRIVATE_KEY:-}" ] || missing+=("PRIVATE_KEY")
-          [ -n "${PRIVATE_KEY_PASSWORD:-}" ] || missing+=("PRIVATE_KEY_PASSWORD")
-          if [ ${#missing[@]} -ne 0 ]; then
-            echo "::error::Missing required secrets: ${missing[*]}"
-            exit 1
-          fi
-          echo "All required secrets are present."
+        run: ./gradlew :plugin:publishPlugin --console=plain
 
-      # publishPlugin depends on signPlugin (signing config) and patchChangelog, so the plugin is
-      # signed before it is uploaded. Credentials are read from the environment by build.gradle.kts.
-      - name: Publish plugin
+      - name: Upload Release Asset
         env:
-          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
-          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin --console=plain
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.event.release.tag_name }} plugin/build/distributions/*
