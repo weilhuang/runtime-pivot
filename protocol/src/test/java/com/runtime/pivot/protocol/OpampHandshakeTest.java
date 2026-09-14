@@ -53,6 +53,82 @@ public class OpampHandshakeTest {
     }
 
     @Test
+    public void websocketDisconnectClearsConnectedSession() throws Exception {
+        String token = AuthTokens.randomToken();
+        OpampServer server = OpampServer.start(ConnectionConfig.builder()
+                .token(token)
+                .sessionId("session-disconnect")
+                .build());
+        OpampClient client = new OpampClient(server.connectionConfig(), "3.0.0-test",
+                Collections.<String, CommandHandler>emptyMap());
+        try {
+            client.start();
+            waitUntil(server::isAgentConnected, 8_000);
+            client.close();
+            waitUntil(new Check() {
+                @Override
+                public boolean ok() {
+                    return !server.isAgentConnected();
+                }
+            }, 8_000);
+        } finally {
+            server.close();
+        }
+    }
+
+    @Test
+    public void httpFallbackHandshakeAndPing() throws Exception {
+        String token = AuthTokens.randomToken();
+        OpampServer server = OpampServer.start(ConnectionConfig.builder()
+                .token(token)
+                .sessionId("session-http")
+                .heartbeatSeconds(1)
+                .build());
+        ConnectionConfig httpOnly = ConnectionConfig.builder()
+                .host("127.0.0.1")
+                .wsPort(1)
+                .httpPort(server.getHttpPort())
+                .token(token)
+                .sessionId("session-http")
+                .heartbeatSeconds(1)
+                .build();
+        OpampClient client = new OpampClient(httpOnly, "3.0.0-test",
+                Collections.<String, CommandHandler>singletonMap(PivotCommands.PING, pingHandler()));
+        try {
+            client.start();
+            waitUntil(server::isAgentConnected, 8_000);
+            CommandResult result = server.sendCommand(CommandRequest.newBuilder()
+                    .setRequestId(UUID.randomUUID().toString())
+                    .setCommand(PivotCommands.PING)
+                    .setTimeoutMs(8_000)
+                    .setPayload(PingRequest.newBuilder().setEcho("http").build().toByteString())
+                    .build(), 8_000).get(12, TimeUnit.SECONDS);
+            assertEquals("http", PingResult.parseFrom(result.getPayload()).getEcho());
+        } finally {
+            client.close();
+            server.close();
+        }
+    }
+
+    @Test
+    public void connectionConfigPreservesEventBufferSize() throws Exception {
+        OpampServer server = OpampServer.start(ConnectionConfig.builder()
+                .token(AuthTokens.randomToken())
+                .sessionId("session-buffer")
+                .eventBufferSize(42)
+                .path("/v1/opamp")
+                .build());
+        try {
+            assertEquals(42, server.connectionConfig().getEventBufferSize());
+            assertEquals("/v1/opamp", server.connectionConfig().getPath());
+            ConnectionConfig parsed = ConnectionConfig.parse(server.connectionConfig().toAgentArgument());
+            assertEquals(42, parsed.getEventBufferSize());
+        } finally {
+            server.close();
+        }
+    }
+
+    @Test
     public void rejectsWrongToken() throws Exception {
         ConnectionConfig serverConfig = ConnectionConfig.builder()
                 .host("127.0.0.1")

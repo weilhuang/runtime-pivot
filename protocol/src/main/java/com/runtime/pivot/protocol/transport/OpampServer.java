@@ -41,6 +41,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -55,8 +56,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class OpampServer implements Closeable {
     private final String token;
     private final String sessionId;
+    private final String path;
     private final int maxMessageBytes;
     private final int heartbeatSeconds;
+    private final int eventBufferSize;
     private final WsServer wsServer;
     private final HttpServer httpServer;
     private final ScheduledExecutorService scheduler;
@@ -64,12 +67,13 @@ public final class OpampServer implements Closeable {
     private final CopyOnWriteArrayList<OpampServerListener> listeners = new CopyOnWriteArrayList<OpampServerListener>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    private OpampServer(String token, String sessionId, int maxMessageBytes, int heartbeatSeconds,
-                        WsServer wsServer, HttpServer httpServer) {
-        this.token = token;
-        this.sessionId = sessionId;
-        this.maxMessageBytes = maxMessageBytes;
-        this.heartbeatSeconds = heartbeatSeconds;
+    private OpampServer(ConnectionConfig config, WsServer wsServer, HttpServer httpServer) {
+        this.token = config.getToken();
+        this.sessionId = config.getSessionId();
+        this.path = config.getPath();
+        this.maxMessageBytes = config.getMaxMessageBytes();
+        this.heartbeatSeconds = config.getHeartbeatSeconds();
+        this.eventBufferSize = config.getEventBufferSize();
         this.wsServer = wsServer;
         this.httpServer = httpServer;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
@@ -89,14 +93,7 @@ public final class OpampServer implements Closeable {
         InetAddress address = InetAddress.getByName(config.getHost());
         WsServer wsServer = new WsServer(new InetSocketAddress(address, config.getWsPort()), config);
         HttpServer httpServer = new HttpServer(new InetSocketAddress(address, config.getHttpPort()), config);
-        OpampServer server = new OpampServer(
-                config.getToken(),
-                config.getSessionId(),
-                config.getMaxMessageBytes(),
-                config.getHeartbeatSeconds(),
-                wsServer,
-                httpServer
-        );
+        OpampServer server = new OpampServer(config, wsServer, httpServer);
         wsServer.owner = server;
         httpServer.owner = server;
         try {
@@ -119,11 +116,12 @@ public final class OpampServer implements Closeable {
                 .host("127.0.0.1")
                 .wsPort(getWsPort())
                 .httpPort(getHttpPort())
-                .path(ConnectionConfig.DEFAULT_PATH)
+                .path(path)
                 .token(token)
                 .sessionId(sessionId)
                 .maxMessageBytes(maxMessageBytes)
                 .heartbeatSeconds(heartbeatSeconds)
+                .eventBufferSize(eventBufferSize)
                 .build();
     }
 
@@ -179,8 +177,11 @@ public final class OpampServer implements Closeable {
                 if (current == null) {
                     return;
                 }
+            } else {
+                current.attachSink(sink);
             }
             current.handle(message);
+            current.flushOutgoing();
         } catch (ProtocolVersion.ProtocolVersionException e) {
             sink.send(error(message.getInstanceUid(), ServerErrorResponseType.ServerErrorResponseType_BadRequest, e.getMessage()));
         } catch (UnauthorizedException e) {
@@ -231,10 +232,11 @@ public final class OpampServer implements Closeable {
         return created;
     }
 
-    void onClosed(TransportSink sink) {
+    void onClosed(WebSocket conn) {
         AgentSession current = session.get();
-        if (current != null && current.sink == sink) {
+        if (current != null && current.ownsWebSocket(conn)) {
             session.compareAndSet(current, null);
+            current.connected.set(false);
             current.failPending(new IOException("Agent disconnected"));
             for (OpampServerListener listener : listeners) {
                 listener.onAgentDisconnected(current);
@@ -327,12 +329,13 @@ public final class OpampServer implements Closeable {
 
     public static final class AgentSession {
         private final OpampServer server;
-        private final TransportSink sink;
+        private volatile TransportSink sink;
         private final ByteString instanceUid;
         private final long agentCapabilities;
         private final Set<String> negotiatedCustom = ConcurrentHashMap.newKeySet();
         private final ConcurrentHashMap<String, CompletableFuture<CommandResult>> pending =
                 new ConcurrentHashMap<String, CompletableFuture<CommandResult>>();
+        private final ConcurrentLinkedQueue<ServerToAgent> outbound = new ConcurrentLinkedQueue<ServerToAgent>();
         private final AtomicBoolean connected = new AtomicBoolean(true);
         private volatile String healthStatus = "unknown";
         private volatile boolean healthy;
@@ -379,7 +382,7 @@ public final class OpampServer implements Closeable {
                     .setInstanceUid(instanceUid)
                     .setCustomMessage(CustomMessages.commandRequest(request))
                     .build();
-            sink.send(message);
+            enqueueOutgoing(message);
             long timeout = timeoutMs > 0 ? timeoutMs : request.getTimeoutMs();
             if (timeout > 0) {
                 scheduleTimeout(future, request.getRequestId(), timeout);
@@ -389,7 +392,7 @@ public final class OpampServer implements Closeable {
 
         boolean cancel(String requestId) {
             CompletableFuture<CommandResult> future = pending.remove(requestId);
-            sink.send(ServerToAgent.newBuilder()
+            enqueueOutgoing(ServerToAgent.newBuilder()
                     .setInstanceUid(instanceUid)
                     .setCustomMessage(CustomMessages.cancel(requestId))
                     .build());
@@ -435,6 +438,40 @@ public final class OpampServer implements Closeable {
                 }
             } catch (IOException e) {
                 sink.send(error(instanceUid, ServerErrorResponseType.ServerErrorResponseType_BadRequest, e.getMessage()));
+            }
+        }
+
+        void attachSink(TransportSink next) {
+            this.sink = next;
+        }
+
+        boolean ownsWebSocket(WebSocket conn) {
+            return sink != null && sink.isWebSocket(conn);
+        }
+
+        void enqueueOutgoing(ServerToAgent message) {
+            outbound.add(message);
+            TransportSink current = sink;
+            if (current != null && current.canPush()) {
+                flushOutgoing();
+            }
+        }
+
+        void flushOutgoing() {
+            TransportSink current = sink;
+            if (current == null) {
+                return;
+            }
+            if (current.canPush()) {
+                ServerToAgent next;
+                while ((next = outbound.poll()) != null) {
+                    current.send(next);
+                }
+                return;
+            }
+            ServerToAgent next = outbound.poll();
+            if (next != null) {
+                current.send(next);
             }
         }
 
@@ -487,6 +524,10 @@ public final class OpampServer implements Closeable {
         void send(ServerToAgent message);
 
         void close(int code, String reason);
+
+        boolean canPush();
+
+        boolean isWebSocket(WebSocket conn);
     }
 
     private static final class WsServer extends WebSocketServer {
@@ -511,7 +552,7 @@ public final class OpampServer implements Closeable {
 
         @Override
         public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-            owner.onClosed(new WsSink(conn, config.getMaxMessageBytes()));
+            owner.onClosed(conn);
         }
 
         @Override
@@ -569,6 +610,16 @@ public final class OpampServer implements Closeable {
             if (socket != null && socket.isOpen()) {
                 socket.close(code, reason);
             }
+        }
+
+        @Override
+        public boolean canPush() {
+            return socket != null && socket.isOpen();
+        }
+
+        @Override
+        public boolean isWebSocket(WebSocket conn) {
+            return socket == conn;
         }
     }
 
@@ -730,6 +781,16 @@ public final class OpampServer implements Closeable {
         @Override
         public void close(int code, String reason) {
             // HTTP is request/response; connection is closed by the server after writing.
+        }
+
+        @Override
+        public boolean canPush() {
+            return false;
+        }
+
+        @Override
+        public boolean isWebSocket(WebSocket conn) {
+            return false;
         }
     }
 

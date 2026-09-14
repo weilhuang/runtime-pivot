@@ -47,6 +47,7 @@ public class PathSafetyAndQueueTest {
         ConnectionConfig parsed = ConnectionConfig.parse(config.toAgentArgument());
         assertEquals(9, parsed.getWsPort());
         assertEquals("session-1", parsed.getSessionId());
+        assertEquals(ConnectionConfig.DEFAULT_EVENT_BUFFER, parsed.getEventBufferSize());
         assertFalse(config.toLogString().contains("0123456789abcdef0123456789abcdef"));
     }
 

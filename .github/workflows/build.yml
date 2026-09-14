@@ -208,4 +208,5 @@ jobs:
           gh release create "$VERSION" \
             --draft \
             --title "$VERSION" \
-            --notes-file "$RELEASE_NOTE"
+            --notes-file "$RELEASE_NOTE" \
+            --target "$GITHUB_SHA"
