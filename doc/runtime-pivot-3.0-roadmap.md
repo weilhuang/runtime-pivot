@@ -4,6 +4,7 @@
 > 基准提交：`f43a23cd416bc153a9df3e2e1c72daf396630f43`（`main`，已合并 PR #6 *Runtime Pivot 3.0: OpAMP protocol foundation*）  
 > 基准版本：`pluginVersion=3.0.0`，`platformVersion=2025.3`，`pluginSinceBuild=253`（见 `gradle.properties`）  
 > 核实日期：2026-09-14  
+> 修订：2026-09-14 — 纳入对 `ef98d277` 的 Codex P2（多会话路由、对象 handle 登记桥、session 鉴权缺口），已对照 `main` 源码复核。  
 > 适用对象：后续设计、实现、优化、重构的开发者或 AI 编码代理
 
 ## 0. 与 `runtime-pivot-3.0-refactoring-plan.md` 的关系
@@ -64,7 +65,9 @@ runtime-pivot
 | --- | --- | --- |
 | OpAMP Server（IDEA） | `OpampServer` 绑定 loopback，随机 WS/HTTP 端口 | `protocol/.../OpampServer.java`；`ConnectionConfig` 拒绝非 `127.0.0.1`/`localhost` |
 | OpAMP Client（Agent） | `OpampClient` 优先 WebSocket，失败则 HTTP POST `/v1/opamp` | `OpampClient.start()` |
-| 鉴权 | `Authorization: Bearer <128-bit hex>` + `X-Runtime-Pivot-Session-Id` | `AuthTokens`；token 不进 `toLogString()` |
+| 鉴权（**已核实**） | **有效强制的是 loopback + Bearer token**。`X-Runtime-Pivot-Session-Id` 与 identifying attribute `runtime.pivot.session.id` **均可缺省** | `OpampServer.authorize`：header 为 null/空则通过；仅当 header 非空才与 server `sessionId` 比较。`handshake`：`readSessionId` 为 null 时不拒绝，只在属性**出现且不匹配**时 `session mismatch` |
+| 会话槽 | **每个 project 一个** `OpampServer`；内部 **单个** `AtomicReference<AgentSession>`；新 handshake `getAndSet` 后对旧会话 `close("replaced")` | `RuntimePivotOpampService.ensureStarted()` 复用已有 server；`OpampServer.handshake` |
+| 多 Run 注入 | 同 project 多次 launch **共用**同一 `ConnectionConfig`（同一 token / sessionId / 端口） | `RuntimeJavaAgentConfig` → `ensureStarted()` 已启动则直接返回 |
 | 协议版本 | identifying attribute `runtime.pivot.protocol.version=3` | `ProtocolVersion` |
 | 标准 bits | Agent：`ReportsStatus \| ReportsHealth \| ReportsHeartbeat`；Server：`AcceptsStatus \| OffersConnectionSettings` | `PivotCapabilities` |
 | Custom capability | `io.runtime.pivot.v1` + `*.classes` / `*.events` / `*.objects` / `*.probes` | `PivotCapabilities.agentCustomCapabilities()` |
@@ -77,6 +80,10 @@ runtime-pivot
 | 动态 Attach UX | **无**（无 `jdk.attach` 调用、无设置项） | 仓库检索 |
 
 握手 / ping / 错误 token / 缺协议版本 / WS 与 HTTP disconnect 有协议测试：`protocol/src/test/java/com/runtime/pivot/protocol/OpampHandshakeTest.java`。
+
+因此：持有正确 token 的 loopback 客户端可以不带 session header、也不带 session identifying attribute 而完成握手。规格「每条连接校验 sessionId」**尚未实现**。Client 注入参数里仍会带上 `session=`（`ConnectionConfig.toAgentArgument()`），但这是发送侧习惯，不是 Server 门禁。
+
+**多调试会话：** 当前 **不支持** 两路 Agent 并存。第二次 handshake 会关掉第一次（`replaced`）。ToolWindow 里切换 `XDebugSession` **不会**换到对应 JVM——命令始终打到「最后一次握手成功」的那条连接。在 Wave 4 的 session registry 落地前，产品语义是 **last handshake wins**。
 
 **未核实到的行为：** `OpampClient` 在 `onClose` 只把 `handshakeComplete=false`，**没有自动重连**。规格 Phase 3「连接断开可恢复」目前只做到会话清理，未做到客户端恢复。
 
@@ -121,7 +128,7 @@ io.runtime.pivot.v1
 | --- | --- |
 | `classes` | Agent 五条 class/transformer 命令已实现 |
 | `events` | 有界缓冲 + timeline **拉取** 已实现；**无** `EventBatch` 推送 |
-| `objects` | **无** ObjectHandle / Layout / Store / Load；无对应命令与 proto |
+| `objects` | **无** ObjectHandle / Layout / Store / Load；无对应命令与 proto；`ExpressionEvaluation` 只给出 IDE `XValue`，无目标 JVM 登记桥 |
 | `probes` | `NoOpProbeEngine` 只把 `ProbeDefinition` 放进 `ConcurrentHashMap`，无字节码插桩 |
 
 ### 1.5 JDI 控制面（plugin-debugger）
@@ -129,7 +136,7 @@ io.runtime.pivot.v1
 | 类 | 作用 | UI 接线 |
 | --- | --- | --- |
 | `DebuggerSessions` | `XDebugSession.DATA_KEY` / `XDebuggerManager.getCurrentSession()` | 未被面板调用 |
-| `ExpressionEvaluation` | 公开 `XDebuggerUtil.createExpression` + `XDebuggerEvaluator` | **仅** `ObjectsPanel` Evaluate |
+| `ExpressionEvaluation` | 公开 `XDebuggerUtil.createExpression` + `XDebuggerEvaluator`；回调类型为 IDE 侧 **`XValue`** | **仅** `ObjectsPanel` Evaluate。**没有**把求值结果登记到目标 JVM Agent handle 的桥；OpAMP **不能**把活的 JVM 对象身份当成 `XValue` 传过去 |
 | `AsyncStackFrames` | `XExecutionStack.computeStackFrames`，不阻塞 EDT | **未接线** |
 | `DropFrameCapability` | 隔离 Experimental `XDropFrameHandler` | **未接线**；forbidden-API 扫描白名单仅此文件 |
 | `SessionLifecycleListener` | `processStopped` / `currentSessionChanged` 空方法体 | 已在 `plugin.xml` `projectListeners` 注册，无 Pause Interval、无资源释放以外的逻辑（OpAMP 由 project service `dispose()` 关闭） |
@@ -154,7 +161,7 @@ io.runtime.pivot.v1
 
 | 任务 / 工作流 | 覆盖 | 缺口 |
 | --- | --- | --- |
-| `:protocol:test` | 握手 WS/HTTP、错误 token、缺版本、disconnect、PathSafety、有界队列、capability bits、token 128-bit | 无 cancel/progress/chunking/EventBatch 发送测试；无 dump 命令测试 |
+| `:protocol:test` | 握手 WS/HTTP、错误 token、缺版本、disconnect、PathSafety、有界队列、capability bits、token 128-bit | 无 cancel/progress/chunking/EventBatch 发送测试；无 dump 命令测试；**无**缺 session header/attribute 拒绝测试 |
 | `:agent:agent-core:test` | `ClassLoadingRecorder` 丢弃计数 | 无 `ClassQueryService` dump/精确匹配测试 |
 | `:agent:agent-probe:test` | `ProbeDefinition` kind 校验 + NoOp 存取 | 无插桩 |
 | `:plugin:unitTest` | 常量、legacy settings 迁移、loopback URL | — |
@@ -187,11 +194,11 @@ io.runtime.pivot.v1
 | **0 基线** | 3.0.0、253、Java 21、Kotlin 2.x、Gradle 9、多模块、Agent 源码 in-tree | **done** | `gradle.properties`、`settings.gradle.kts`、agent 源码 |
 | **1 公开 API** | 删除 impl / TestOnly 复制；公开 session/evaluator；异步栈帧；对象改表达式 | **partial** | impl 已清；`ExpressionEvaluation` / `AsyncStackFrames` 已写；栈帧与 Drop Frame **未进 UI**；对象仅 Evaluate |
 | **2 ToolWindow** | 五页、session model、替换弹窗、UI 测主要状态 | **partial** | 五页已注册；Probes 占位；Objects/Sessions 不完整；`RuntimePivotSwingComponentTest` 不测真实面板 |
-| **3 OpAMP** | proto、loopback WS/HTTP、token、command/progress/cancel、capability、分块 | **partial** | 握手/命令/token/版本 **done**；progress 未发送；cancel 未接线；无分块；无自动重连；EventBatch 只收不发 |
+| **3 OpAMP** | proto、loopback WS/HTTP、token、command/progress/cancel、capability、分块 | **partial** | 握手/命令/token/版本 **done**；**session 绑定未强制**；progress 未发送；cancel 未接线；无分块；无自动重连；EventBatch 只收不发；**单 AgentSession 槽** |
 | **4 全局 JVM** | ClassLoader / Loaded / Timeline / Dump / 自有 Transformer；无需断点；有界；禁 sun.instrument | **partial** | Agent 五命令 **done**；UI 只接 loaders + loaded（且无过滤分页）；Dump 不落盘；IT 未覆盖 dump/timeline |
-| **5 对象** | Handle、Layout、Store、Load Preview、会话结束释放 | **missing** | 无 proto、无命令、无 handle；仅 JDI Evaluate |
+| **5 对象** | Handle、Layout、Store、Load Preview、会话结束释放 | **missing** | 无 proto、无命令、无 handle；仅 JDI Evaluate → `XValue`；**无**目标 JVM 登记桥 |
 | **6 Probe / Monitoring** | ASM 插桩、nanoTime、Dashboard、Tracepoint Bridge、Pause Interval 分离 | **missing** | `NoOpProbeEngine`；`ProbesPanel` 占位；无 Pause Interval |
-| **7 Stack / Drop Frame** | 异步栈、自有 formatter、Drop Frame 隔离、禁内部 API | **partial** | 适配类存在且隔离；UI 未接；无断点 formatter；无 Tracepoint 创建 |
+| **7 Stack / Drop Frame** | 异步栈、自有 formatter、Drop Frame 隔离、禁内部 API | **partial** | 适配类存在且隔离；UI 未接；无断点 formatter；无 Tracepoint 创建；**无** XDebugSession↔Agent 路由，切换会话无法对准 JVM |
 | **8 删遗留** | 删 ActionExecutor 字符串、旧 Dialog、不可追踪 jar、旧配置名、README/CHANGELOG/迁移 | **partial** | 旧实现与 fat jar 已删；设置已改名并迁移 `attachAgent`；README 超前；GIF/submodule/迁移文档仍在 |
 
 先前评审「0–3 done，4 partial，5–6 missing，7 partial，8 mostly」**过于乐观**：Phase 2 与 Phase 3 的验收（UI 状态、progress/cancel、分块、可恢复连接）在源码中未满足，故记 **partial**。
@@ -215,6 +222,9 @@ io.runtime.pivot.v1
 13. **Verifier 矩阵窄于规格**：`pluginVerification.ides { recommended() }`，不是 §22 的三版本门禁。
 14. **Qodana 镜像 2025.1** vs 平台 2025.3（`qodana.yml`）。
 15. **规格示例 `platformType=IC`** 与仓库 `intellijIdea()` 不一致——以仓库为准（IC 工件在 2025.3 不再单独发布）。
+16. **Session ID 未强制（鉴权缺口）**：`authorize` 接受缺失/空的 `X-Runtime-Pivot-Session-Id`；handshake 只在 identifying attribute **出现且不匹配**时拒绝。有效鉴权是 **token + loopback**，不是 token+session。规格 §18「每条连接校验 sessionId」未满足。
+17. **多调试会话 / last handshake wins**：`OpampServer.session` 为单个 `AtomicReference`；新握手 `close("replaced")`。`RuntimePivotOpampService` 每 project 一台 server，多次 launch 共用 token/sessionId。在 registry 落地前，多 Run **不受支持**；Classes/Objects 命令打到最后连上的 Agent。
+18. **对象求值无法进入 Agent handle**：`ExpressionEvaluation.evaluate` 只回调 `XValue`。没有 Agent 静态入口或一次性 JDI Bridge 把暂停帧对象登记到目标 JVM。OpAMP 不能携带活的对象身份。没有该桥，Layout/Store/Load 拿不到对象。
 
 ---
 
@@ -240,12 +250,15 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 | D4 | 动态 Attach 仍为可选；`agentmain` 可保留。3.0 完成 **不** 依赖 Attach UX。无 `jdk.attach` 时不得伪装成功。 | 规格 §9.2 |
 | D5 | Dump 默认精确类名；多 loader 必须用户选择；落盘必须 `PathSafety`。 | 规格 §16.3 |
 | D6 | Transformer 只展示 Runtime Pivot 自己登记的项。禁止恢复 `sun.instrument` 枚举。 | 规格 §13.1 |
-| D7 | 对象交互走表达式 + Evaluator，禁止 debugger-tree 内部节点。 | 规格 §13.2 |
+| D7 | 对象交互：UI 用表达式 + Evaluator **触发目标 JVM 登记桥**；Layout/Store/Load **只接受 Agent handle id**，禁止把 `XValue` 当协议载荷；禁止 debugger-tree 内部节点。 | 规格 §13.2；`XValue` 不能过 OpAMP |
 | D8 | HTTP 回退保持 2s poll；Wave 内可改为「有 outbound 时立即等下一 poll」，但不得把 poll 重新拉到心跳 30s。分块与多消息 HTTP flush 作为架构优化，不阻塞 Wave 1。 | PR #6 已修 30s 问题 |
 | D9 | `CommandProgress` / UI 取消属于 OpAMP 保真，Wave 1 Dump 若可能 >1s 应接取消；完整进度条可与分块一起做。 | 规格 §10.3 / §15.6 |
 | D10 | Pause Interval 与 Probe 计时分离；禁止再把墙钟 resume→pause 叫 Monitoring。 | 规格 §11.3 |
 | D11 | Experimental `XDropFrameHandler` 只能留在 `DropFrameCapability`。 | 规格 §6.2 |
 | D12 | 后续 PR **按 Wave 拆分**；一 PR 不跨 Wave 塞功能。 | 可审、可回滚 |
+| D13 | **多会话必须先有 registry 再做 UI 切换。** `OpampServer` 从单槽改为按 `sessionId`/`instance_uid` 索引；`RuntimePivotOpampService` 映射每个 `XDebugSession`（或 launch）到对应 Agent 连接。在此之前文档与 UI 必须写明 **多 Run 不受支持 / last handshake wins**，不得假装切换 `XDebugSession` 会换 JVM。 | `AtomicReference<AgentSession>` + `close("replaced")` |
+| D14 | Wave 2 **必须**交付稳定的目标 JVM 登记桥（见该波设计决策），否则不算 Phase 5 开始。 | 无桥则 Agent 对象命令没有操作数 |
+| D15 | 鉴权现状按 **token + loopback** 描述（Wave 0 诚实化）。**强制** session header + identifying attribute 并补测试，放在 Wave 5 安全项；未落地前不得把「session 绑定」写成已满足。 | `authorize` / `handshake` 对空 session 放行 |
 
 ---
 
@@ -255,24 +268,25 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 
 ### Wave 0 — 诚实化
 
-**目标：** 对外描述、capability、错误码与仓库真实能力对齐。不增加功能。
+**目标：** 对外描述、capability、错误码与仓库真实能力对齐。不增加功能（session 强制校验放到 Wave 5）。
 
 **范围：**
 
 - `PivotCapabilities`：handshake 只声明已实现集合（D1）。
-- README Features：按「已接线 / 协议已支持 UI 未接 / 未做」三档改写；保留 OpAMP 安全描述中已核实部分。
-- CHANGELOG：标明 3.0.0 为 OpAMP foundation；未完成项指向本文。
+- README Features：按「已接线 / 协议已支持 UI 未接 / 未做」三档改写。
+- README / Marketplace 安全句：只写 **loopback + 随机端口 + 128-bit token**。不要写「每条连接校验 sessionId」或「token+session 双因素已落地」。可加一句「同 project 多调试 Run 目前共用一条 Agent 连接，后握手覆盖先握手」。
+- CHANGELOG：标明 3.0.0 为 OpAMP foundation；未完成项指向本文；点名 session 绑定未强制、多会话 last-wins、对象登记桥缺失。
 - 对未注册命令保持 `ERROR_UNSUPPORTED`（已有）；补一条协议测试：未注册命令返回该码。
 - Probes / Objects 面板在 capability 缺失时显示「当前 Agent 未提供该能力」，而不是像已上线。
 
-**非范围：** 任何新命令、新 UI 控件、capability 重新加回。
+**非范围：** 任何新命令、新 UI 控件、capability 重新加回。不在本波改 `authorize`（拒绝空 session 归 Wave 5）。
 
-**关键设计决策：** 先收缩宣称，再在后续 Wave 加回。不要用文档注释代替 handshake 收缩。
+**关键设计决策：** 先收缩宣称，再在后续 Wave 加回。不要用文档注释代替 handshake 收缩。鉴权完成度以 D15 为准。
 
 **验收：**
 
 - 新 Agent 与 Server 协商集合不含 `objects` / `probes`；`events` 在无 EventBatch 发布器时不含。
-- README 不再把 Dump/Timeline/Drop Frame 写成已提供 UI。
+- README 不再把 Dump/Timeline/Drop Frame 写成已提供 UI；不再把 session header 写成已强制鉴权。
 - `PivotCapabilitiesTest` 断言收缩后的集合。
 
 **建议测试：** 扩展 `PivotCapabilitiesTest`、握手测试断言 `negotiated` 集合；一条 UNSUPPORTED 命令集成断言。
@@ -294,7 +308,7 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 - 未连接禁用按钮；失败打印 `CommandError` 码；长请求可取消（调用已有 `cancel`）。
 - 补 `AgentPremainIT`：dump（精确名）、timeline、错误类名、多 loader 需 `loader_id`。
 
-**非范围：** EventBatch 实时推送（属架构优化）；对象/Probe；分页控件的精美程度不挡功能。
+**非范围：** EventBatch 实时推送（属架构优化）；对象/Probe；分页控件的精美程度不挡功能。多调试会话路由（Wave 4）；在此之前 Classes 命令打到 last-handshake Agent。
 
 **关键设计决策：** UI 必须发 `LoadedClassesRequest` / `ClassDumpRequest` proto，禁止再发空 payload。Dump 类名禁止 `contains` 匹配（Agent 已是 `equals`）。
 
@@ -308,26 +322,35 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 
 ### Wave 2 — Object Handle / Layout / Store / Load Preview（规格 Phase 5）
 
-**目标：** 在暂停帧表达式求值之上建立对象数据面，且不恢复 debugger-tree 内部节点。
+**目标：** 在暂停帧表达式求值之上建立对象数据面，且不恢复 debugger-tree 内部节点。**没有目标 JVM 登记桥则本波不算开始。**
 
 **范围：**
 
-- proto：`ObjectHandle`、`ObjectLayoutResult`、`ObjectSnapshotResult`、`ObjectMutationPreview` 及对应命令。
-- Agent：弱引用 handle（sessionId、TTL、类型摘要）；显式 pin 才强引用；会话/Agent 关闭释放。
-- Layout / Store（深度、对象数、文件大小上限、循环引用、不默序列化敏感字段）。
+- **登记桥（阻塞项，D14）：** 必须有一条稳定路径，把「当前暂停帧上的表达式结果」变成 Agent 侧 handle，再把 **handle id** 经 OpAMP 送回 IDEA。
+  - 推荐所有权：`plugin-debugger` 一次性 JDI Bridge（Evaluator 调用 Agent 公开静态入口，例如 `AgentRuntime.registerHandle(Object)` / 同类），**或** 等价的 Agent 静态入口由 Evaluator 调用。
+  - 该入口必须是 **目标 JVM 内** 的登记：弱引用 + sessionId + TTL + 类型摘要；返回 handle id（字符串/UUID），**不是** `XValue`。
+  - `ExpressionEvaluation.evaluate` 继续只用于 IDE 展示（toString / 树节点）。**禁止**把 `XValue` 塞进 CustomMessage。OpAMP 不能携带活的 JVM 对象身份。
+  - Suspend ALL 时：要么提示「恢复后登记」，要么走一次性 JDI Bridge（事件线程上执行登记、立刻返回 id），不得假装后台 OpAMP 线程一定可跑。
+- proto：`ObjectHandle`、`ObjectLayoutResult`、`ObjectSnapshotResult`、`ObjectMutationPreview` 及对应命令。命令的操作数是 **handle id**，不是表达式字符串（表达式只用于触发登记）。
+- Agent：Layout / Store / Load 只查 handle 表；显式 pin 才强引用；会话/Agent 关闭释放全部 handle。
+- Store：深度、对象数、文件大小上限、循环引用、不默序列化敏感字段。
 - Load：解析 → 类型校验 → preview → 确认 → 修改；失败不得先 `clear` Collection/Map。
-- UI：表达式（可预填编辑器选区）、Evaluate、Layout、Store、Load Preview、确认框（目标 JVM / 表达式 / 影响范围）。
-- capability：实现后才把 `objects` 加回 handshake（D1）。
+- UI：表达式（可预填编辑器选区）→ Register/Evaluate → 显示 handle id → Layout / Store / Load Preview → 确认框（目标 JVM / 表达式 / handle / 影响范围）。
+- capability：登记桥 + 至少一条对象命令可用后，才把 `objects` 加回 handshake（D1）。
 
-**非范围：** 变量树右键选中 XValue；任意远程类方法反射执行。
+**非范围：** 变量树右键选中 XValue；任意远程类方法反射执行；把 IDE `XValue` 序列化后当对象身份。
 
-**关键设计决策：** JDI 只负责拿到当前帧的对象身份/表达式；布局与序列化在 Agent。Suspend ALL 时走「恢复后执行」或一次性 JDI Bridge，不得假装 OpAMP 一定可达。
+**关键设计决策：**
 
-**验收：** 规格 Phase 5 验收四条；取消文件选择无 NPE；无手写 Java 源码拼接。
+1. JDI/Evaluator 的职责止于 **在目标 JVM 内拿到对象引用并登记**；布局与序列化只在 Agent，且只认 handle。
+2. 登记桥 API 必须稳定、可测试（IT：暂停帧表达式 → handle id → layout）。入口类放在 agent-core 公开包，由 bootstrap 隔离 CL 可见；禁止再走已删除的 `ActionExecutor` 字符串协议。
+3. 多 JVM 时 handle 必须带上 Agent `sessionId`/`instance_uid`（依赖 Wave 4 registry；本波可先假设单连接，但 proto 字段要预留，避免 Wave 4 翻盘）。
 
-**建议测试：** handle 弱引用与释放；Load preview 失败不 mutate；PathSafety 写盘；无会话 / 未暂停。
+**验收：** 规格 Phase 5 验收四条；**任意暂停帧表达式可得到 handle id 并对其 Layout**；取消文件选择无 NPE；无手写 Java 源码拼接；测试证明 `XValue` 不出现在协议载荷中。
 
-**模块：** `protocol`，`agent-core`，`plugin-debugger`，`plugin-ui`，`plugin-core`。
+**建议测试：** 登记桥：无会话 / 未暂停 / 表达式失败；handle 弱引用与释放；Load preview 失败不 mutate；PathSafety 写盘；错误 handle id → `BAD_REQUEST`。
+
+**模块：** `protocol`，`agent-core`（登记入口 + handle 表），`agent-bootstrap`（隔离 CL 可见性），`plugin-debugger`（Evaluator 调入口），`plugin-ui`，`plugin-core`（把 handle 命令发到**当前** Agent 连接）。
 
 ---
 
@@ -356,27 +379,33 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 
 ---
 
-### Wave 4 — Sessions 接线
+### Wave 4 — Sessions 接线 + 多会话 Agent 路由
 
-**目标：** 把已有调试适配接到 Sessions，并处理 Suspend ALL UX。
+**目标：** 把已有调试适配接到 Sessions，并处理 Suspend ALL UX。**会话切换不得在没有 Agent 路由的情况下交付。**
 
 **范围：**
 
-- 当前 `XDebugSession` 列表/切换。
+- **plugin-core / protocol session registry（阻塞项，D13）：**
+  - `OpampServer` 不再用单个 `AtomicReference<AgentSession>` 覆盖连接。按 `sessionId` 和/或 `instance_uid` 索引 **多条** Agent 连接；新握手若 sessionId 已占用则替换该槽，**不得**无差别 `close("replaced")` 掉其它 JVM。
+  - 每次 launch 应有 **自己的** token 与 sessionId（`RuntimeJavaAgentConfig` 不能把所有 Run 复用 `ensureStarted()` 的第一份 `ConnectionConfig`）。
+  - `RuntimePivotOpampService` 维护 `XDebugSession`（或 launch/`RunContentDescriptor` 等公开身份）→ Agent 连接（token / sessionId / instance_uid / `OpampServer.AgentSession`）映射。
+  - `sendCommand` / `cancel` 必须带目标连接；UI 选中的调试会话决定路由。无映射时禁用数据面按钮并说明原因。
+- 当前 `XDebugSession` 列表/切换（在 registry 之上）。
 - `AsyncStackFrames.compute` 展示栈；EDT 只更新 UI。
 - `DropFrameCapability`：不可用时禁用按钮。
-- Suspend ALL：Agent 命令入口提示「目标可能无响应，恢复后重试」。
+- Suspend ALL：对该会话对应的 Agent 命令入口提示「目标可能无响应，恢复后重试」。
 - 自有栈断点 formatter（若本波做 Tracepoint 列表）；不引入 `XBreakpointUtil` impl。
+- 文档/UI：registry 完成前继续标明 **多 Run 不受支持 / last handshake wins**；完成后删除该限制。
 
-**非范围：** 恢复 2.x 模态大 Dialog 作为主界面。
+**非范围：** 恢复 2.x 模态大 Dialog 作为主界面；仅改 Sessions 面板却不改 `OpampServer` 单槽。
 
-**关键设计决策：** 继续只用公开 XDebugger API；Drop Frame 不扩散出 `DropFrameCapability`（D11）。
+**关键设计决策：** 继续只用公开 XDebugger API；Drop Frame 不扩散出 `DropFrameCapability`（D11）。路由状态放在 `plugin-core`（+ `protocol` 多会话存储），`plugin-ui` / `plugin-debugger` **不得**各自维护一份「当前 Agent」。一 project 多 server 端口也可以，但推荐一台 `OpampServer` 多 `AgentSession`，用 sessionId 区分（与现有 header/attribute 对齐，依赖 Wave 5 强制 session）。
 
-**验收：** 规格 Phase 7 三条；无会话 / 未暂停 / 不支持 Drop Frame 三种 UI 状态可测。
+**验收：** 规格 Phase 7 三条；**两个并发 debug Run 时，切换 XDebugSession 后 Classes/ping 打到对应 JVM**（可用两个 `SleepMain`）；无会话 / 未暂停 / 不支持 Drop Frame 三种 UI 状态可测。registry 未完成不得宣称 Sessions 切换已交付。
 
-**建议测试：** `AsyncStackFrames` 在无 session/未暂停时的错误回调；Drop Frame `ThreeState` 非 YES 时不调用 `drop`。
+**建议测试：** 二次 handshake 不再踢掉不同 sessionId 的连接；同 sessionId 重连才替换；`AsyncStackFrames` 在无 session/未暂停时的错误回调；Drop Frame `ThreeState` 非 YES 时不调用 `drop`；UI 选 A 会话时命令的 `request` 落到 A 的 `instance_uid`。
 
-**模块：** `plugin-ui`，`plugin-debugger`。
+**模块：** `protocol`（`OpampServer` 多会话），`plugin-core`（registry + 每 launch 独立 ConnectionConfig），`plugin-debugger`，`plugin-ui`，`integration-tests`。
 
 ---
 
@@ -394,14 +423,15 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 - 删除或归档 `doc/operation/*.gif`（或移到 `doc/legacy/2.x/` 并在迁移文引用）。
 - 删除 `.gitmodules` 与空 submodule 目录（确认无历史需要后）。
 - 注入失败不再完全静默：至少 Console/通知一条原因（仍不阻断用户程序启动）。
+- **Session 鉴权强制（D15）：** `OpampServer.authorize` **拒绝** null/空 `X-Runtime-Pivot-Session-Id`，且必须与 server 该连接的 sessionId 相等；`handshake` **拒绝**缺失或不匹配的 `runtime.pivot.session.id` identifying attribute。Client 必须始终发送两者（现有 `OpampClient` 已发送 header；须保证首条 `AgentToServer` 带 attribute）。协议测试：缺 header → 401/关连接；缺 attribute → `BadRequest`；错 session → unauthorized。Wave 4 多会话路由依赖此强制项——若 Wave 4 先做，本项必须与 registry 同一 PR 或更早合入。
 
 **非范围：** 新数据面功能。
 
-**验收：** 规格 Phase 8 三条中文档与遗留部分；路径穿越单测仍绿且生产调用点存在。
+**验收：** 规格 Phase 8 三条中文档与遗留部分；路径穿越单测仍绿且生产调用点存在；**缺 session header / 缺 session attribute / 错 session 均不能握手**。
 
-**建议测试：** Configurable 读写新字段；legacy `attachAgent=false` 迁移保持（已有单测）。
+**建议测试：** Configurable 读写新字段；legacy `attachAgent=false` 迁移保持（已有单测）；`OpampHandshakeTest` 增加缺 header、空 header、缺 identifying attribute 三条拒绝用例（现有 `rejectsWrongToken` 不够）。
 
-**模块：** `plugin-core`，`plugin-ui`，`protocol`（PathSafety 调用点），`doc/`，`.gitmodules`。
+**模块：** `plugin-core`，`plugin-ui`，`protocol`（PathSafety 调用点 + `authorize`/`handshake`），`doc/`，`.gitmodules`。
 
 ---
 
@@ -441,7 +471,8 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 | 模块边界 | plugin-ui 直接调 `OpampServer.AgentSession` | UI 只依赖 `RuntimePivotOpampService` 快照 DTO |
 | shade / ASM | 现 shade protobuf/ws/slf4j | Wave 3 增加 ASM relocate；bootstrap 保持最小 |
 | 类查询性能 | 每次 `getAllLoadedClasses()` 全扫 | loader/name 索引；弱引用缓存；与 ClassLoadingRecorder 同源 id |
-| 安全 | token 脱敏已做；落盘未接 PathSafety | Wave 5；错误栈限制已有 8 帧，保持不回传对象内容 |
+| 安全 | token 脱敏已做；**session 绑定未强制**；落盘未接 PathSafety | Wave 0 诚实描述；Wave 5 强制 header+attribute 并测试；PathSafety 调用点 |
+| 多 Agent 路由 | 单 `AtomicReference<AgentSession>`；后握手 `replaced` | Wave 4 registry；完成前保持 last-wins 文案 |
 | Isolated CL | `isAgentClass` 仍列出未 shade 的 `com.google.protobuf` 等名 | 与 shadow relocate 对齐，避免双路径加载 |
 | `JavaProgramPatcher` 异常 | 吞掉 | Wave 5 可观测性 |
 
@@ -464,8 +495,9 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 | 局部变量仍走暂停帧 | Evaluate **满足** | 保持 |
 | Monitoring 用目标 JVM 计时 | **不满足**（NoOp） | Wave 3 |
 | ToolWindow 覆盖核心工作流 | 骨架 **部分** | Wave 1–4 |
-| loopback + token + 版本 + 能力协商 | 传输 **满足**；能力集合 **超售** | Wave 0 收缩 + 后续按能力加回 |
-| 类加载事件与 object handle 无无限强引用 | 类加载 **满足**；handle **不存在** | Wave 2 |
+| loopback + token + 版本 + 能力协商 | **token + loopback + 版本协商满足**；**session 绑定不满足**（header/attribute 可缺省）；能力集合 **超售** | Wave 0 按 token+loopback 诚实描述并收缩 capability；Wave 5 强制 session header+attribute；对象/probe capability 随 Wave 2/3 加回 |
+| 多调试会话路由到对应 Agent | **不满足**（单槽，last handshake wins） | Wave 4 registry |
+| 类加载事件与 object handle 无无限强引用 | 类加载 **满足**；handle **不存在**（亦无登记桥） | Wave 2（含登记桥） |
 | Object Load 失败不破坏原对象 | **不满足**（无 Load） | Wave 2 |
 | 测试不是 `NO-SOURCE` | 满足（已有分层测试） | Wave 6 加厚到规格 §21 |
 | README 与迁移文档与真实行为一致 | **不满足** | Wave 0 + Wave 5 |
@@ -490,5 +522,6 @@ ToolWindow ──► Project Service (RuntimePivotOpampService)
 
 - 读取规格 `doc/runtime-pivot-3.0-refactoring-plan.md`（OpAMP 版）。
 - Fast-forward `main` 到 PR #6 merge commit `f43a23c` 后通读 `protocol/`、`agent/`、`plugin/`、`integration-tests/`、`test-apps/`、CI、`README.md`、`CHANGELOG.md`、`gradle.properties`。
+- 2026-09-14 复核 Codex P2：`OpampServer.authorize` / `handshake`、`AtomicReference<AgentSession>` + `close("replaced")`、`ExpressionEvaluation` 仅返回 `XValue`、仓库内无 handle 登记入口。
 - 以类名、命令常量和 proto 消息为准；changelog 只作旁证。
 - 未在本环境跑全量 `./gradlew check`（文档 PR 不改生产逻辑）。测试结论来自测试源码内容，而非本次执行绿结果。
