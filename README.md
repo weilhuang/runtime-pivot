@@ -2,7 +2,7 @@
 
 # Runtime-Pivot
 
-<img src="plugin/src/main/resources/META-INF/pluginIcon.svg" alt="Runtime Pivot plugin logo" width="128" height="128">
+<img src="docs/assets/logo-readme.svg" alt="Runtime Pivot plugin logo" width="128" height="128">
 
 
 
